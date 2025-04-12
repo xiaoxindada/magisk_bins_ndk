@@ -20,8 +20,6 @@
 #include <flags.h>
 #include <core.hpp>
 
-#include "pts.hpp"
-
 using namespace std;
 
 #define DEFAULT_SHELL "/system/bin/sh"
@@ -41,10 +39,11 @@ int quit_signals[] = { SIGALRM, SIGABRT, SIGHUP, SIGPIPE, SIGQUIT, SIGTERM, SIGI
     "Usage: su [options] [-] [user [argument...]]\n\n"
     "Options:\n"
     "  -c, --command COMMAND         Pass COMMAND to the invoked shell\n"
+    "  -i, --interactive             Force pseudo-terminal allocation when using -c\n"
     "  -g, --group GROUP             Specify the primary group\n"
-    "  -G, --supp-group GROUP        Specify a supplementary group.\n"
+    "  -G, --supp-group GROUP        Specify a supplementary group\n"
     "                                The first specified supplementary group is also used\n"
-    "                                as a primary group if the option -g is not specified.\n"
+    "                                as a primary group if the option -g is not specified\n"
     "  -Z, --context CONTEXT         Change SELinux context\n"
     "  -t, --target PID              PID to take mount namespace from\n"
     "  -h, --help                    Display this help message and exit\n"
@@ -105,6 +104,7 @@ int su_client_main(int argc, char *argv[]) {
             { "target",                 required_argument,  nullptr, 't' },
             { "group",                  required_argument,  nullptr, 'g' },
             { "supp-group",             required_argument,  nullptr, 'G' },
+            { "interactive",            no_argument,        nullptr, 'i' },
             { nullptr, 0, nullptr, 0 },
     };
 
@@ -119,7 +119,9 @@ int su_client_main(int argc, char *argv[]) {
             strcpy(argv[i], "-M");
     }
 
-    while ((c = getopt_long(argc, argv, "c:hlmps:VvuZ:Mt:g:G:", long_opts, nullptr)) != -1) {
+    bool interactive = false;
+
+    while ((c = getopt_long(argc, argv, "c:hlimps:VvuZ:Mt:g:G:", long_opts, nullptr)) != -1) {
         switch (c) {
             case 'c': {
                 string command;
@@ -134,6 +136,9 @@ int su_client_main(int argc, char *argv[]) {
             }
             case 'h':
                 usage(EXIT_SUCCESS);
+            case 'i':
+                interactive = true;
+                break;
             case 'l':
                 req.login = true;
                 break;
@@ -219,10 +224,11 @@ int su_client_main(int argc, char *argv[]) {
     }
 
     // Determine which one of our streams are attached to a TTY
+    interactive |= req.command.empty();
     int atty = 0;
-    if (isatty(STDIN_FILENO))  atty |= ATTY_IN;
-    if (isatty(STDOUT_FILENO)) atty |= ATTY_OUT;
-    if (isatty(STDERR_FILENO)) atty |= ATTY_ERR;
+    if (isatty(STDIN_FILENO) && interactive)  atty |= ATTY_IN;
+    if (isatty(STDOUT_FILENO) && interactive) atty |= ATTY_OUT;
+    if (isatty(STDERR_FILENO) && interactive) atty |= ATTY_ERR;
 
     // Send stdin
     send_fd(fd, (atty & ATTY_IN) ? -1 : STDIN_FILENO);
@@ -241,9 +247,9 @@ int su_client_main(int argc, char *argv[]) {
 
     if (atty) {
         setup_sighandlers(sighandler);
-        watch_sigwinch_async(STDOUT_FILENO, ptmx);
-        pump_stdin_async(ptmx);
-        pump_stdout_blocking(ptmx);
+        // if stdin is not a tty, if we pump to ptmx, our process may intercept the input to ptmx and
+        // output to stdout, which cause the target process lost input.
+        pump_tty(ptmx, (atty & ATTY_IN) ? ptmx : -1);
     }
 
     // Get the exit code
