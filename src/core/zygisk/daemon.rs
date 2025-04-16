@@ -37,7 +37,9 @@ fn exec_zygiskd(is_64_bit: bool, remote: UnixStream) {
     #[cfg(target_pointer_width = "32")]
     let magisk = "magisk";
 
-    let exe = FsPathBuf::<64>::new().join(get_magisk_tmp()).join(magisk);
+    let exe = FsPathBuf::from(cstr_buf::new::<64>())
+        .join(get_magisk_tmp())
+        .join(magisk);
 
     let mut fd_str = cstr_buf::new::<16>();
     write!(fd_str, "{}", remote.as_raw_fd()).ok();
@@ -189,7 +191,7 @@ impl MagiskD {
                     .join("zygisk");
                 // Create the unloaded marker file
                 if let Ok(dir) = Directory::open(&path) {
-                    dir.open_fd(cstr!("unloaded"), O_CREAT | O_RDONLY, 0o644)
+                    dir.openat_as_file(cstr!("unloaded"), O_CREAT | O_RDONLY, 0o644)
                         .log()
                         .ok();
                 }

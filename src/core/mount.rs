@@ -21,7 +21,9 @@ pub fn setup_mounts() {
     let magisk_tmp = get_magisk_tmp();
 
     // Mount preinit directory
-    let dev_path = FsPathBuf::<64>::new().join(magisk_tmp).join(PREINITDEV);
+    let dev_path = FsPathBuf::from(cstr_buf::new::<64>())
+        .join(magisk_tmp)
+        .join(PREINITDEV);
     let mut linked = false;
     if let Ok(attr) = dev_path.get_attr() {
         if attr.st.st_mode & libc::S_IFMT as c_uint == libc::S_IFBLK.as_() {
@@ -42,16 +44,12 @@ pub fn setup_mounts() {
                     let target = Utf8CStr::from_string(&mut target);
                     let mut preinit_dir = resolve_preinit_dir(target);
                     let preinit_dir = Utf8CStr::from_string(&mut preinit_dir);
+                    let preinit_dir = FsPath::from(preinit_dir);
                     let r: LoggedResult<()> = try {
-                        FsPath::from(preinit_dir).mkdir(0o700)?;
-                        let mut buf = cstr_buf::default();
-                        if mnt_path.parent(&mut buf) {
-                            FsPath::from(&buf).mkdirs(0o755)?;
-                        }
+                        preinit_dir.mkdir(0o700)?;
+                        mnt_path.mkdirs(0o755)?;
                         mnt_path.remove().ok();
-                        unsafe {
-                            libc::symlink(preinit_dir.as_ptr(), mnt_path.as_ptr()).as_os_err()?
-                        }
+                        mnt_path.create_symlink_to(preinit_dir)?;
                     };
                     if r.is_ok() {
                         linked = true;
@@ -187,17 +185,10 @@ pub fn find_preinit_device() -> String {
         let preinit_dir = FsPath::from(Utf8CStr::from_string(&mut preinit_dir));
         let _: LoggedResult<()> = try {
             preinit_dir.mkdirs(0o700)?;
-            let mut buf = cstr_buf::default();
-            if mirror_dir.parent(&mut buf) {
-                FsPath::from(&buf).mkdirs(0o755)?;
-            }
-            unsafe {
-                libc::umount2(mirror_dir.as_ptr(), libc::MNT_DETACH)
-                    .as_os_err()
-                    .ok(); // ignore error
-                mirror_dir.remove().ok();
-                libc::symlink(preinit_dir.as_ptr(), mirror_dir.as_ptr()).as_os_err()?;
-            }
+            mirror_dir.mkdirs(0o755)?;
+            mirror_dir.unmount().ok();
+            mirror_dir.remove().ok();
+            mirror_dir.create_symlink_to(preinit_dir)?;
         };
         if std::env::var_os("MAKEDEV").is_some() {
             mirror_dir.clear();
@@ -208,7 +199,7 @@ pub fn find_preinit_device() -> String {
                     libc::S_IFBLK | 0o600,
                     info.device as dev_t,
                 )
-                .as_os_err()
+                .check_io_err()
                 .log()
                 .ok();
             }

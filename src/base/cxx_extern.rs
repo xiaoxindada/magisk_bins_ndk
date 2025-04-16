@@ -1,6 +1,5 @@
 // Functions in this file are only for exporting to C++, DO NOT USE IN RUST
 
-use std::io;
 use std::os::fd::{BorrowedFd, OwnedFd, RawFd};
 
 use cfg_if::cfg_if;
@@ -9,14 +8,14 @@ use libc::{c_char, mode_t};
 use crate::files::map_file_at;
 pub(crate) use crate::xwrap::*;
 use crate::{
-    CxxResultExt, Directory, FsPath, Utf8CStr, clone_attr, cstr, cstr_buf, fclone_attr, fd_path,
-    map_fd, map_file, slice_from_ptr,
+    CxxResultExt, Directory, FsPath, OsResultStatic, Utf8CStr, clone_attr, cstr, cstr_buf,
+    fclone_attr, fd_path, map_fd, map_file, slice_from_ptr,
 };
 
 pub(crate) fn fd_path_for_cxx(fd: RawFd, buf: &mut [u8]) -> isize {
     let mut buf = cstr_buf::wrap(buf);
     fd_path(fd, &mut buf)
-        .log_cxx_with_msg(|w| w.write_str("fd_path failed"))
+        .log_cxx()
         .map_or(-1_isize, |_| buf.len() as isize)
 }
 
@@ -57,7 +56,7 @@ unsafe extern "C" fn rm_rf_for_cxx(path: *const c_char) -> bool {
 
 #[unsafe(no_mangle)]
 unsafe extern "C" fn frm_rf(fd: OwnedFd) -> bool {
-    fn inner(fd: OwnedFd) -> io::Result<()> {
+    fn inner(fd: OwnedFd) -> OsResultStatic<()> {
         Directory::try_from(fd)?.remove_all()
     }
     inner(fd).is_ok()
@@ -83,7 +82,7 @@ pub(crate) fn map_fd_for_cxx(fd: RawFd, sz: usize, rw: bool) -> &'static mut [u8
     }
 }
 
-pub(crate) unsafe fn readlinkat_for_cxx(
+pub(crate) unsafe fn readlinkat(
     dirfd: RawFd,
     path: *const c_char,
     buf: *mut u8,
@@ -117,12 +116,7 @@ unsafe extern "C" fn cp_afc_for_cxx(src: *const c_char, dest: *const c_char) -> 
             if let Ok(dest) = Utf8CStr::from_ptr(dest) {
                 let src = FsPath::from(src);
                 let dest = FsPath::from(dest);
-                return src
-                    .copy_to(dest)
-                    .log_cxx_with_msg(|w| {
-                        w.write_fmt(format_args!("cp_afc {} -> {} failed", src, dest))
-                    })
-                    .is_ok();
+                return src.copy_to(dest).log_cxx().is_ok();
             }
         }
         false
@@ -136,12 +130,7 @@ unsafe extern "C" fn mv_path_for_cxx(src: *const c_char, dest: *const c_char) ->
             if let Ok(dest) = Utf8CStr::from_ptr(dest) {
                 let src = FsPath::from(src);
                 let dest = FsPath::from(dest);
-                return src
-                    .move_to(dest)
-                    .log_cxx_with_msg(|w| {
-                        w.write_fmt(format_args!("mv_path {} -> {} failed", src, dest))
-                    })
-                    .is_ok();
+                return src.move_to(dest).log_cxx().is_ok();
             }
         }
         false
@@ -155,12 +144,7 @@ unsafe extern "C" fn link_path_for_cxx(src: *const c_char, dest: *const c_char) 
             if let Ok(dest) = Utf8CStr::from_ptr(dest) {
                 let src = FsPath::from(src);
                 let dest = FsPath::from(dest);
-                return src
-                    .link_to(dest)
-                    .log_cxx_with_msg(|w| {
-                        w.write_fmt(format_args!("link_path {} -> {} failed", src, dest))
-                    })
-                    .is_ok();
+                return src.link_to(dest).log_cxx().is_ok();
             }
         }
         false
@@ -174,11 +158,7 @@ unsafe extern "C" fn clone_attr_for_cxx(src: *const c_char, dest: *const c_char)
             if let Ok(dest) = Utf8CStr::from_ptr(dest) {
                 let src = FsPath::from(src);
                 let dest = FsPath::from(dest);
-                return clone_attr(src, dest)
-                    .log_cxx_with_msg(|w| {
-                        w.write_fmt(format_args!("clone_attr {} -> {} failed", src, dest))
-                    })
-                    .is_ok();
+                return clone_attr(src, dest).log_cxx().is_ok();
             }
         }
         false
@@ -187,9 +167,7 @@ unsafe extern "C" fn clone_attr_for_cxx(src: *const c_char, dest: *const c_char)
 
 #[unsafe(export_name = "fclone_attr")]
 unsafe extern "C" fn fclone_attr_for_cxx(a: RawFd, b: RawFd) -> bool {
-    fclone_attr(a, b)
-        .log_cxx_with_msg(|w| w.write_str("fclone_attr failed"))
-        .is_ok()
+    fclone_attr(a, b).log_cxx().is_ok()
 }
 
 #[unsafe(export_name = "cxx$utf8str$new")]
