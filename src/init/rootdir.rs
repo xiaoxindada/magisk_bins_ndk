@@ -2,8 +2,8 @@ use crate::consts::{ROOTMNT, ROOTOVL};
 use crate::ffi::MagiskInit;
 use base::libc::{O_CREAT, O_RDONLY, O_WRONLY};
 use base::{
-    BufReadExt, Directory, FsPath, FsPathBuf, LoggedResult, ResultExt, Utf8CStr, Utf8CString,
-    clone_attr, cstr, cstr_buf, debug, path,
+    BufReadExt, Directory, FsPath, FsPathBuilder, FsPathMnt, LoggedResult, ResultExt, Utf8CStr,
+    Utf8CString, clone_attr, cstr, debug,
 };
 use std::io::BufReader;
 use std::{
@@ -47,7 +47,7 @@ pub struct OverlayAttr(Utf8CString, Utf8CString);
 
 impl MagiskInit {
     pub(crate) fn parse_config_file(&mut self) {
-        if let Ok(fd) = path!("/data/.backup/.magisk").open(O_RDONLY) {
+        if let Ok(fd) = cstr!("/data/.backup/.magisk").open(O_RDONLY) {
             let mut reader = BufReader::new(fd);
             reader.foreach_props(|key, val| {
                 if key == "PREINITDEVICE" {
@@ -66,18 +66,14 @@ impl MagiskInit {
         mount_list: &mut String,
     ) -> LoggedResult<()> {
         let mut dir = Directory::open(src_dir)?;
-        let mut con = cstr_buf::default();
+        let mut con = cstr::buf::default();
         loop {
             match &dir.read()? {
                 None => return Ok(()),
                 Some(e) => {
                     let name = e.name();
-                    let src = FsPathBuf::from(cstr_buf::dynamic(256))
-                        .join(src_dir)
-                        .join(name);
-                    let dest = FsPathBuf::from(cstr_buf::dynamic(256))
-                        .join(dest_dir)
-                        .join(name);
+                    let src = cstr::buf::dynamic(256).join_path(src_dir).join_path(name);
+                    let dest = cstr::buf::dynamic(256).join_path(dest_dir).join_path(name);
                     if dest.exists() {
                         if e.is_dir() {
                             // Recursive
@@ -102,7 +98,7 @@ impl MagiskInit {
         let mut mount_list = String::new();
         self.mount_impl(cstr!(ROOTOVL), dest, &mut mount_list)
             .log_ok();
-        if let Ok(mut fd) = path!(ROOTMNT).create(O_CREAT | O_WRONLY, 0) {
+        if let Ok(mut fd) = cstr!(ROOTMNT).create(O_CREAT | O_WRONLY, 0) {
             fd.write(mount_list.as_bytes()).log_ok();
         }
     }
@@ -110,7 +106,7 @@ impl MagiskInit {
     pub(crate) fn restore_overlay_contexts(&self) {
         self.overlay_con.iter().for_each(|attr| {
             let OverlayAttr(path, con) = attr;
-            FsPath::from(path).set_secontext(con).log_ok();
+            path.set_secontext(con).log_ok();
         })
     }
 }

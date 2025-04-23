@@ -16,8 +16,8 @@ use crate::resetprop::proto::persistent_properties::{
 use base::const_format::concatcp;
 use base::libc::{O_CLOEXEC, O_RDONLY};
 use base::{
-    Directory, FsPathBuf, LibcReturn, LoggedResult, MappedFile, SilentResultExt, Utf8CStr,
-    WalkResult, clone_attr, cstr, debug, libc::mkstemp, path,
+    Directory, FsPath, FsPathBuilder, LibcReturn, LoggedResult, MappedFile, SilentResultExt,
+    Utf8CStr, Utf8CStrBuf, WalkResult, clone_attr, cstr, debug, libc::mkstemp,
 };
 
 const PERSIST_PROP_DIR: &str = "/data/property";
@@ -64,11 +64,13 @@ impl PropExt for PersistentProperties {
 }
 
 fn check_proto() -> bool {
-    path!(PERSIST_PROP).exists()
+    cstr!(PERSIST_PROP).exists()
 }
 
 fn file_get_prop(name: &Utf8CStr) -> LoggedResult<String> {
-    let path = FsPathBuf::default().join(PERSIST_PROP_DIR).join(name);
+    let path = cstr::buf::default()
+        .join_path(PERSIST_PROP_DIR)
+        .join_path(name);
     let mut file = path.open(O_RDONLY | O_CLOEXEC).silent()?;
     debug!("resetprop: read prop from [{}]", path);
     let mut s = String::new();
@@ -77,11 +79,13 @@ fn file_get_prop(name: &Utf8CStr) -> LoggedResult<String> {
 }
 
 fn file_set_prop(name: &Utf8CStr, value: Option<&Utf8CStr>) -> LoggedResult<()> {
-    let path = FsPathBuf::default().join(PERSIST_PROP_DIR).join(name);
+    let path = cstr::buf::default()
+        .join_path(PERSIST_PROP_DIR)
+        .join_path(name);
     if let Some(value) = value {
-        let mut tmp = FsPathBuf::default()
-            .join(PERSIST_PROP_DIR)
-            .join("prop.XXXXXX");
+        let mut tmp = cstr::buf::default()
+            .join_path(PERSIST_PROP_DIR)
+            .join_path("prop.XXXXXX");
         {
             let mut f = unsafe {
                 mkstemp(tmp.as_mut_ptr())
@@ -111,7 +115,7 @@ fn proto_read_props() -> LoggedResult<PersistentProperties> {
 }
 
 fn proto_write_props(props: &PersistentProperties) -> LoggedResult<()> {
-    let mut tmp = FsPathBuf::default().join(concatcp!(PERSIST_PROP, ".XXXXXX"));
+    let mut tmp = cstr::buf::default().join_path(concatcp!(PERSIST_PROP, ".XXXXXX"));
     {
         let f = unsafe {
             mkstemp(tmp.as_mut_ptr())
@@ -121,8 +125,8 @@ fn proto_write_props(props: &PersistentProperties) -> LoggedResult<()> {
         debug!("resetprop: encode with protobuf [{}]", tmp);
         props.write_message(&mut Writer::new(BufWriter::new(f)))?;
     }
-    clone_attr(path!(PERSIST_PROP), &tmp)?;
-    tmp.rename_to(path!(PERSIST_PROP))?;
+    clone_attr(cstr!(PERSIST_PROP), &tmp)?;
+    tmp.rename_to(cstr!(PERSIST_PROP))?;
     Ok(())
 }
 

@@ -6,16 +6,19 @@ pub use const_format;
 pub use libc;
 use num_traits::FromPrimitive;
 
-pub use cstr::*;
+pub use cstr::{
+    FsPathFollow, StrErr, Utf8CStr, Utf8CStrBuf, Utf8CStrBufArr, Utf8CStrBufRef, Utf8CString,
+};
 use cxx_extern::*;
 pub use dir::*;
 pub use ffi::fork_dont_care;
 pub use files::*;
 pub use logging::*;
 pub use misc::*;
+pub use mount::*;
 pub use result::*;
 
-mod cstr;
+pub mod cstr;
 mod cxx_extern;
 mod dir;
 mod files;

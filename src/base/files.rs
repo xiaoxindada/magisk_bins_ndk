@@ -1,6 +1,6 @@
 use crate::{
-    Directory, FsPath, FsPathBuf, FsPathFollow, LibcReturn, OsError, OsResult, OsResultStatic,
-    Utf8CStr, Utf8CStrBuf, cstr_buf, errno, error,
+    Directory, FsPathFollow, LibcReturn, OsError, OsResult, OsResultStatic, Utf8CStr, Utf8CStrBuf,
+    cstr, errno, error,
 };
 use bytemuck::{Pod, bytes_of, bytes_of_mut};
 use libc::{
@@ -11,8 +11,10 @@ use mem::MaybeUninit;
 use num_traits::AsPrimitive;
 use std::cmp::min;
 use std::ffi::CStr;
+use std::fmt::Display;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
+use std::ops::Deref;
 use std::os::fd::{AsFd, BorrowedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::io::{AsRawFd, FromRawFd, OwnedFd, RawFd};
@@ -137,7 +139,9 @@ macro_rules! open_fd {
 }
 
 pub fn fd_path(fd: RawFd, buf: &mut dyn Utf8CStrBuf) -> OsResult<'static, ()> {
-    let path = FsPathBuf::default().join("/proc/self/fd").join_fmt(fd);
+    let path = cstr::buf::default()
+        .join_path("/proc/self/fd")
+        .join_path_fmt(fd);
     path.read_link(buf).map_err(|e| e.set_args(None, None))
 }
 
@@ -193,27 +197,27 @@ impl FileAttr {
 
 const XATTR_NAME_SELINUX: &CStr = c"security.selinux";
 
-impl FsPath {
-    pub fn follow_link(&self) -> &FsPathFollow {
-        unsafe { mem::transmute(self) }
+pub trait FsPath: Deref<Target = Utf8CStr> {
+    fn follow_link(&self) -> &FsPathFollow {
+        unsafe { mem::transmute(self.deref()) }
     }
 
-    pub fn open(&self, flags: i32) -> OsResult<File> {
+    fn open(&self, flags: i32) -> OsResult<File> {
         Ok(File::from(open_fd!(self, flags)?))
     }
 
-    pub fn create(&self, flags: i32, mode: mode_t) -> OsResult<File> {
+    fn create(&self, flags: i32, mode: mode_t) -> OsResult<File> {
         Ok(File::from(open_fd!(self, O_CREAT | flags, mode)?))
     }
 
-    pub fn exists(&self) -> bool {
+    fn exists(&self) -> bool {
         unsafe {
             let mut st: stat = mem::zeroed();
             libc::lstat(self.as_ptr(), &mut st) == 0
         }
     }
 
-    pub fn rename_to<'a>(&'a self, name: &'a FsPath) -> OsResult<'a, ()> {
+    fn rename_to<'a>(&'a self, name: &'a Utf8CStr) -> OsResult<'a, ()> {
         unsafe {
             libc::rename(self.as_ptr(), name.as_ptr()).check_os_err(
                 "rename",
@@ -223,11 +227,11 @@ impl FsPath {
         }
     }
 
-    pub fn remove(&self) -> OsResult<()> {
+    fn remove(&self) -> OsResult<()> {
         unsafe { libc::remove(self.as_ptr()).check_os_err("remove", Some(self), None) }
     }
 
-    pub fn remove_all(&self) -> OsResultStatic<()> {
+    fn remove_all(&self) -> OsResultStatic<()> {
         let attr = self.get_attr()?;
         if attr.is_dir() {
             let mut dir = Directory::try_from(open_fd!(self, O_RDONLY | O_CLOEXEC)?)?;
@@ -237,7 +241,7 @@ impl FsPath {
     }
 
     #[allow(clippy::unnecessary_cast)]
-    pub fn read_link(&self, buf: &mut dyn Utf8CStrBuf) -> OsResult<()> {
+    fn read_link(&self, buf: &mut dyn Utf8CStrBuf) -> OsResult<()> {
         buf.clear();
         unsafe {
             let r = libc::readlink(self.as_ptr(), buf.as_mut_ptr(), buf.capacity() - 1)
@@ -248,7 +252,7 @@ impl FsPath {
         Ok(())
     }
 
-    pub fn mkdir(&self, mode: mode_t) -> OsResult<()> {
+    fn mkdir(&self, mode: mode_t) -> OsResult<()> {
         unsafe {
             if libc::mkdir(self.as_ptr(), mode) < 0 {
                 if *errno() == EEXIST {
@@ -261,18 +265,18 @@ impl FsPath {
         Ok(())
     }
 
-    pub fn mkdirs(&self, mode: mode_t) -> OsResultStatic<()> {
+    fn mkdirs(&self, mode: mode_t) -> OsResultStatic<()> {
         if self.is_empty() {
             return Ok(());
         }
 
-        let mut path = FsPathBuf::default();
+        let mut path = cstr::buf::default();
         let mut components = self.split('/').filter(|s| !s.is_empty());
         loop {
             let Some(s) = components.next() else {
                 break;
             };
-            path = path.join(s);
+            path.append_path(s);
 
             unsafe {
                 if libc::mkdir(path.as_ptr(), mode) < 0 && *errno() != EEXIST {
@@ -286,7 +290,7 @@ impl FsPath {
     }
 
     // Inspired by https://android.googlesource.com/platform/bionic/+/master/libc/bionic/realpath.cpp
-    pub fn realpath(&self, buf: &mut dyn Utf8CStrBuf) -> OsResult<()> {
+    fn realpath(&self, buf: &mut dyn Utf8CStrBuf) -> OsResult<()> {
         let fd = open_fd!(self, O_PATH | O_CLOEXEC)?;
         let mut st1: libc::stat;
         let mut st2: libc::stat;
@@ -310,7 +314,7 @@ impl FsPath {
         Ok(())
     }
 
-    pub fn get_attr(&self) -> OsResult<FileAttr> {
+    fn get_attr(&self) -> OsResult<FileAttr> {
         let mut attr = FileAttr::new();
         unsafe {
             libc::lstat(self.as_ptr(), &mut attr.st).check_os_err("lstat", Some(self), None)?;
@@ -321,7 +325,7 @@ impl FsPath {
         Ok(attr)
     }
 
-    pub fn set_attr<'a>(&'a self, attr: &'a FileAttr) -> OsResult<'a, ()> {
+    fn set_attr<'a>(&'a self, attr: &'a FileAttr) -> OsResult<'a, ()> {
         unsafe {
             if !attr.is_symlink() {
                 libc::chmod(self.as_ptr(), (attr.st.st_mode & 0o777).as_()).check_os_err(
@@ -344,7 +348,7 @@ impl FsPath {
         Ok(())
     }
 
-    pub fn get_secontext(&self, con: &mut dyn Utf8CStrBuf) -> OsResult<()> {
+    fn get_secontext(&self, con: &mut dyn Utf8CStrBuf) -> OsResult<()> {
         unsafe {
             let sz = libc::lgetxattr(
                 self.as_ptr(),
@@ -364,7 +368,7 @@ impl FsPath {
         Ok(())
     }
 
-    pub fn set_secontext<'a>(&'a self, con: &'a Utf8CStr) -> OsResult<'a, ()> {
+    fn set_secontext<'a>(&'a self, con: &'a Utf8CStr) -> OsResult<'a, ()> {
         unsafe {
             libc::lsetxattr(
                 self.as_ptr(),
@@ -377,7 +381,7 @@ impl FsPath {
         }
     }
 
-    pub fn copy_to(&self, path: &FsPath) -> OsResultStatic<()> {
+    fn copy_to(&self, path: &Utf8CStr) -> OsResultStatic<()> {
         let attr = self.get_attr()?;
         if attr.is_dir() {
             path.mkdir(0o777)?;
@@ -392,7 +396,7 @@ impl FsPath {
                 let mut dest = path.create(O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0o777)?;
                 std::io::copy(&mut src, &mut dest)?;
             } else if attr.is_symlink() {
-                let mut buf = cstr_buf::default();
+                let mut buf = cstr::buf::default();
                 self.read_link(&mut buf)?;
                 unsafe {
                     libc::symlink(buf.as_ptr(), path.as_ptr()).check_os_err(
@@ -407,7 +411,7 @@ impl FsPath {
         Ok(())
     }
 
-    pub fn move_to(&self, path: &FsPath) -> OsResultStatic<()> {
+    fn move_to(&self, path: &Utf8CStr) -> OsResultStatic<()> {
         if path.exists() {
             let attr = path.get_attr()?;
             if attr.is_dir() {
@@ -422,7 +426,7 @@ impl FsPath {
         Ok(())
     }
 
-    pub fn parent(&self, buf: &mut dyn Utf8CStrBuf) -> bool {
+    fn parent(&self, buf: &mut dyn Utf8CStrBuf) -> bool {
         buf.clear();
         if let Some(parent) = Path::new(self.as_str()).parent() {
             let bytes = parent.as_os_str().as_bytes();
@@ -436,7 +440,7 @@ impl FsPath {
     }
 
     // ln self path
-    pub fn link_to(&self, path: &FsPath) -> OsResultStatic<()> {
+    fn link_to(&self, path: &Utf8CStr) -> OsResultStatic<()> {
         let attr = self.get_attr()?;
         if attr.is_dir() {
             path.mkdir(0o777)?;
@@ -457,7 +461,7 @@ impl FsPath {
     }
 
     // ln -s target self
-    pub fn create_symlink_to<'a>(&'a self, target: &'a FsPath) -> OsResult<'a, ()> {
+    fn create_symlink_to<'a>(&'a self, target: &'a Utf8CStr) -> OsResult<'a, ()> {
         unsafe {
             libc::symlink(target.as_ptr(), self.as_ptr()).check_os_err(
                 "symlink",
@@ -467,17 +471,21 @@ impl FsPath {
         }
     }
 
-    pub fn mkfifo(&self, mode: mode_t) -> OsResult<()> {
+    fn mkfifo(&self, mode: mode_t) -> OsResult<()> {
         unsafe { libc::mkfifo(self.as_ptr(), mode).check_os_err("mkfifo", Some(self), None) }
     }
 }
 
-impl FsPathFollow {
-    pub fn exists(&self) -> bool {
+impl FsPath for FsPathFollow {
+    fn follow_link(&self) -> &FsPathFollow {
+        self
+    }
+
+    fn exists(&self) -> bool {
         unsafe { libc::access(self.as_ptr(), F_OK) == 0 }
     }
 
-    pub fn get_attr(&self) -> OsResult<FileAttr> {
+    fn get_attr(&self) -> OsResult<FileAttr> {
         let mut attr = FileAttr::new();
         unsafe {
             libc::stat(self.as_ptr(), &mut attr.st).check_os_err("stat", Some(self), None)?;
@@ -488,7 +496,7 @@ impl FsPathFollow {
         Ok(attr)
     }
 
-    pub fn set_attr<'a>(&'a self, attr: &'a FileAttr) -> OsResult<'a, ()> {
+    fn set_attr<'a>(&'a self, attr: &'a FileAttr) -> OsResult<'a, ()> {
         unsafe {
             libc::chmod(self.as_ptr(), (attr.st.st_mode & 0o777).as_()).check_os_err(
                 "chmod",
@@ -509,7 +517,7 @@ impl FsPathFollow {
         Ok(())
     }
 
-    pub fn get_secontext(&self, con: &mut dyn Utf8CStrBuf) -> OsResult<()> {
+    fn get_secontext(&self, con: &mut dyn Utf8CStrBuf) -> OsResult<()> {
         unsafe {
             let sz = libc::getxattr(
                 self.as_ptr(),
@@ -529,7 +537,7 @@ impl FsPathFollow {
         Ok(())
     }
 
-    pub fn set_secontext<'a>(&'a self, con: &'a Utf8CStr) -> OsResult<'a, ()> {
+    fn set_secontext<'a>(&'a self, con: &'a Utf8CStr) -> OsResult<'a, ()> {
         unsafe {
             libc::setxattr(
                 self.as_ptr(),
@@ -540,6 +548,59 @@ impl FsPathFollow {
             )
             .check_os_err("setxattr", Some(self), Some(con))
         }
+    }
+}
+
+pub trait FsPathBuilder {
+    fn join_path<T: AsRef<str>>(mut self, path: T) -> Self
+    where
+        Self: Sized,
+    {
+        self.append_path(path);
+        self
+    }
+    fn join_path_fmt<T: Display>(mut self, name: T) -> Self
+    where
+        Self: Sized,
+    {
+        self.append_path_fmt(name);
+        self
+    }
+    fn append_path<T: AsRef<str>>(&mut self, path: T) -> &mut Self;
+    fn append_path_fmt<T: Display>(&mut self, name: T) -> &mut Self;
+}
+
+fn append_path_impl(buf: &mut dyn Utf8CStrBuf, path: &str) {
+    if path.starts_with('/') {
+        buf.clear();
+    }
+    if !buf.is_empty() && !buf.ends_with('/') {
+        buf.push_str("/");
+    }
+    buf.push_str(path);
+}
+
+impl<S: Utf8CStrBuf + Sized> FsPathBuilder for S {
+    fn append_path<T: AsRef<str>>(&mut self, path: T) -> &mut Self {
+        append_path_impl(self, path.as_ref());
+        self
+    }
+
+    fn append_path_fmt<T: Display>(&mut self, name: T) -> &mut Self {
+        self.write_fmt(format_args!("/{}", name)).ok();
+        self
+    }
+}
+
+impl FsPathBuilder for dyn Utf8CStrBuf + '_ {
+    fn append_path<T: AsRef<str>>(&mut self, path: T) -> &mut Self {
+        append_path_impl(self, path.as_ref());
+        self
+    }
+
+    fn append_path_fmt<T: Display>(&mut self, name: T) -> &mut Self {
+        self.write_fmt(format_args!("/{}", name)).ok();
+        self
     }
 }
 
@@ -599,8 +660,8 @@ pub fn fd_set_secontext(fd: RawFd, con: &Utf8CStr) -> OsResult<()> {
     }
 }
 
-pub fn clone_attr<'a>(a: &'a FsPath, b: &'a FsPath) -> OsResult<'a, ()> {
-    let attr = a.get_attr()?;
+pub fn clone_attr<'a>(a: &'a Utf8CStr, b: &'a Utf8CStr) -> OsResult<'a, ()> {
+    let attr = a.get_attr().map_err(|e| e.set_args(Some(a), None))?;
     b.set_attr(&attr).map_err(|e| e.set_args(Some(b), None))
 }
 
