@@ -1,22 +1,23 @@
-use crate::consts::{MAGISK_FULL_VER, MAIN_CONFIG, SECURE_DIR};
+use crate::consts::{MAGISK_FULL_VER, MAGISK_PROC_CON, MAIN_CONFIG, ROOTMNT, ROOTOVL, SECURE_DIR};
 use crate::db::Sqlite3;
 use crate::ffi::{
     DbEntryKey, ModuleInfo, RequestCode, check_key_combo, disable_modules, exec_common_scripts,
     exec_module_scripts, get_magisk_tmp, initialize_denylist, setup_magisk_env,
 };
-use crate::get_prop;
 use crate::logging::{magisk_logging, setup_logfile, start_log_daemon};
 use crate::mount::{clean_mounts, setup_mounts};
 use crate::package::ManagerInfo;
+use crate::selinux::restore_tmpcon;
 use crate::su::SuInfo;
-use base::libc::{O_CLOEXEC, O_RDONLY};
+use crate::{get_prop, set_prop};
+use base::libc::{O_APPEND, O_CLOEXEC, O_RDONLY, O_WRONLY};
 use base::{
-    AtomicArc, BufReadExt, FsPath, FsPathBuilder, ResultExt, Utf8CStr, cstr, error, info, libc,
-    open_fd,
+    AtomicArc, BufReadExt, FsPathBuilder, ResultExt, Utf8CStr, Utf8CStrBuf, cstr, error, info, libc,
 };
-use std::fs::File;
-use std::io::BufReader;
+use std::fmt::Write as FmtWrite;
+use std::io::{BufReader, Write};
 use std::os::unix::net::UnixStream;
+use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Mutex, OnceLock};
 
@@ -77,10 +78,6 @@ pub struct MagiskD {
 impl MagiskD {
     pub fn get() -> &'static MagiskD {
         unsafe { MAGISKD.get().unwrap_unchecked() }
-    }
-
-    pub fn is_recovery(&self) -> bool {
-        self.is_recovery
     }
 
     pub fn zygisk_enabled(&self) -> bool {
@@ -217,9 +214,26 @@ impl MagiskD {
             }
         }
     }
+
+    pub fn reboot(&self) {
+        if self.is_recovery {
+            Command::new("/system/bin/reboot").arg("recovery").status()
+        } else {
+            Command::new("/system/bin/reboot").status()
+        }
+        .ok();
+    }
 }
 
 pub fn daemon_entry() {
+    unsafe { libc::setsid() };
+
+    // Make sure the current context is magisk
+    if let Ok(mut current) = cstr!("/proc/self/attr/current").open(O_WRONLY | O_CLOEXEC) {
+        let con = cstr!(MAGISK_PROC_CON);
+        current.write_all(con.as_bytes_with_nul()).log_ok();
+    }
+
     start_log_daemon();
     magisk_logging();
     info!("Magisk {} daemon started", MAGISK_FULL_VER);
@@ -229,13 +243,13 @@ pub fn daemon_entry() {
         || get_prop(cstr!("ro.product.device"), false).contains("vsoc");
 
     // Load config status
-    let path = cstr::buf::new::<64>()
-        .join_path(get_magisk_tmp())
+    let magisk_tmp = get_magisk_tmp();
+    let mut tmp_path = cstr::buf::new::<64>()
+        .join_path(magisk_tmp)
         .join_path(MAIN_CONFIG);
     let mut is_recovery = false;
-    if let Ok(file) = path.open(O_RDONLY | O_CLOEXEC) {
-        let mut file = BufReader::new(file);
-        file.foreach_props(|key, val| {
+    if let Ok(main_config) = tmp_path.open(O_RDONLY | O_CLOEXEC) {
+        BufReader::new(main_config).foreach_props(|key, val| {
             if key == "RECOVERYMODE" {
                 is_recovery = val == "true";
                 return false;
@@ -243,11 +257,11 @@ pub fn daemon_entry() {
             true
         });
     }
+    tmp_path.truncate(magisk_tmp.len());
 
     let mut sdk_int = -1;
-    if let Ok(file) = cstr!("/system/build.prop").open(O_RDONLY | O_CLOEXEC) {
-        let mut file = BufReader::new(file);
-        file.foreach_props(|key, val| {
+    if let Ok(build_prop) = cstr!("/system/build.prop").open(O_RDONLY | O_CLOEXEC) {
+        BufReader::new(build_prop).foreach_props(|key, val| {
             if key == "ro.build.version.sdk" {
                 sdk_int = val.parse::<i32>().unwrap_or(-1);
                 return false;
@@ -263,6 +277,44 @@ pub fn daemon_entry() {
     }
     info!("* Device API level: {}", sdk_int);
 
+    restore_tmpcon().log_ok();
+
+    // Escape from cgroup
+    let pid = unsafe { libc::getpid() };
+    switch_cgroup("/acct", pid);
+    switch_cgroup("/dev/cg2_bpf", pid);
+    switch_cgroup("/sys/fs/cgroup", pid);
+    if get_prop(cstr!("ro.config.per_app_memcg"), false) != "false" {
+        switch_cgroup("/dev/memcg/apps", pid);
+    }
+
+    // Samsung workaround #7887
+    if cstr!("/system_ext/app/mediatek-res/mediatek-res.apk").exists() {
+        set_prop(cstr!("ro.vendor.mtk_model"), cstr!("0"), false);
+    }
+
+    // Cleanup pre-init mounts
+    tmp_path.append_path(ROOTMNT);
+    if let Ok(mount_list) = tmp_path.open(O_RDONLY | O_CLOEXEC) {
+        BufReader::new(mount_list).foreach_lines(|line| {
+            let item = Utf8CStr::from_string(line);
+            item.unmount().log_ok();
+            true
+        })
+    }
+    tmp_path.truncate(magisk_tmp.len());
+
+    // Remount rootfs as read-only if requested
+    if std::env::var_os("REMOUNT_ROOT").is_some() {
+        cstr!("/").remount_mount_flags(libc::MS_RDONLY).log_ok();
+        unsafe { std::env::remove_var("REMOUNT_ROOT") };
+    }
+
+    // Remove all pre-init overlay files to free-up memory
+    tmp_path.append_path(ROOTOVL);
+    tmp_path.remove_all().log_ok();
+    tmp_path.truncate(magisk_tmp.len());
+
     let magiskd = MagiskD {
         sdk_int,
         is_emulator,
@@ -273,9 +325,22 @@ pub fn daemon_entry() {
     MAGISKD.set(magiskd).ok();
 }
 
+fn switch_cgroup(cgroup: &str, pid: i32) {
+    let mut buf = cstr::buf::new::<64>()
+        .join_path(cgroup)
+        .join_path("cgroup.procs");
+    if !buf.exists() {
+        return;
+    }
+    if let Ok(mut file) = buf.open(O_WRONLY | O_APPEND | O_CLOEXEC) {
+        buf.clear();
+        buf.write_fmt(format_args!("{}", pid)).ok();
+        file.write_all(buf.as_bytes()).log_ok();
+    }
+}
+
 fn check_data() -> bool {
-    if let Ok(fd) = open_fd!(cstr!("/proc/mounts"), O_RDONLY | O_CLOEXEC) {
-        let file = File::from(fd);
+    if let Ok(file) = cstr!("/proc/mounts").open(O_RDONLY | O_CLOEXEC) {
         let mut mnt = false;
         BufReader::new(file).foreach_lines(|line| {
             if line.contains(" /data ") && !line.contains("tmpfs") {

@@ -15,6 +15,7 @@ use derive::Decodable;
 use logging::{android_logging, setup_logfile, zygisk_close_logd, zygisk_get_logd, zygisk_logging};
 use mount::{find_preinit_device, revert_unmount};
 use resetprop::{persist_delete_prop, persist_get_prop, persist_get_props, persist_set_prop};
+use selinux::{lgetfilecon, lsetfilecon, restorecon, setfilecon};
 use socket::{recv_fd, recv_fds, send_fd, send_fds};
 use std::fs::File;
 use std::mem::ManuallyDrop;
@@ -31,6 +32,7 @@ mod logging;
 mod mount;
 mod package;
 mod resetprop;
+mod selinux;
 mod socket;
 mod su;
 mod zygisk;
@@ -135,6 +137,8 @@ pub mod ffi {
         #[cxx_name = "prop_cb"]
         type PropCb;
         unsafe fn get_prop_rs(name: *const c_char, persist: bool) -> String;
+        #[cxx_name = "set_prop"]
+        unsafe fn set_prop_rs(name: *const c_char, value: *const c_char, skip_svc: bool) -> i32;
         unsafe fn prop_cb_exec(
             cb: Pin<&mut PropCb>,
             name: *const c_char,
@@ -205,13 +209,16 @@ pub mod ffi {
         fn recv_fd(socket: i32) -> i32;
         fn recv_fds(socket: i32) -> Vec<i32>;
         unsafe fn write_to_fd(self: &SuRequest, fd: i32);
-
-        #[namespace = "rust"]
-        fn daemon_entry();
-
         fn pump_tty(infd: i32, outfd: i32);
         fn get_pty_num(fd: i32) -> i32;
         fn restore_stdin() -> bool;
+        fn restorecon();
+        fn lgetfilecon(path: Utf8CStrRef, con: &mut [u8]) -> bool;
+        fn setfilecon(path: Utf8CStrRef, con: Utf8CStrRef) -> bool;
+        fn lsetfilecon(path: Utf8CStrRef, con: Utf8CStrRef) -> bool;
+
+        #[namespace = "rust"]
+        fn daemon_entry();
     }
 
     // Default constructors
@@ -224,7 +231,7 @@ pub mod ffi {
     // FFI for MagiskD
     extern "Rust" {
         type MagiskD;
-        fn is_recovery(&self) -> bool;
+        fn reboot(&self);
         fn sdk_int(&self) -> i32;
         fn zygisk_enabled(&self) -> bool;
         fn boot_stage_handler(&self, client: i32, code: i32);
@@ -246,8 +253,6 @@ pub mod ffi {
         fn get() -> &'static MagiskD;
     }
     unsafe extern "C++" {
-        #[allow(dead_code)]
-        fn reboot(self: &MagiskD);
         fn handle_modules(self: &MagiskD) -> Vec<ModuleInfo>;
     }
 }
@@ -271,4 +276,8 @@ impl SuRequest {
 
 pub fn get_prop(name: &Utf8CStr, persist: bool) -> String {
     unsafe { ffi::get_prop_rs(name.as_ptr(), persist) }
+}
+
+pub fn set_prop(name: &Utf8CStr, value: &Utf8CStr, skip_svc: bool) -> bool {
+    unsafe { ffi::set_prop_rs(name.as_ptr(), value.as_ptr(), skip_svc) == 0 }
 }

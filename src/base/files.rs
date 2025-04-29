@@ -14,7 +14,6 @@ use std::ffi::CStr;
 use std::fmt::Display;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
-use std::ops::Deref;
 use std::os::fd::{AsFd, BorrowedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::io::{AsRawFd, FromRawFd, OwnedFd, RawFd};
@@ -117,7 +116,7 @@ impl<T: Write> WriteExt for T {
     }
 }
 
-pub fn __open_fd_impl(path: &Utf8CStr, flags: i32, mode: mode_t) -> OsResult<OwnedFd> {
+fn open_fd(path: &Utf8CStr, flags: i32, mode: mode_t) -> OsResult<OwnedFd> {
     unsafe {
         let fd = libc::open(path.as_ptr(), flags, mode as c_uint).as_os_result(
             "open",
@@ -128,18 +127,8 @@ pub fn __open_fd_impl(path: &Utf8CStr, flags: i32, mode: mode_t) -> OsResult<Own
     }
 }
 
-#[macro_export]
-macro_rules! open_fd {
-    ($path:expr, $flags:expr) => {
-        $crate::__open_fd_impl($path, $flags, 0)
-    };
-    ($path:expr, $flags:expr, $mode:expr) => {
-        $crate::__open_fd_impl($path, $flags, $mode)
-    };
-}
-
 pub fn fd_path(fd: RawFd, buf: &mut dyn Utf8CStrBuf) -> OsResult<'static, ()> {
-    let path = cstr::buf::default()
+    let path = cstr::buf::new::<64>()
         .join_path("/proc/self/fd")
         .join_path_fmt(fd);
     path.read_link(buf).map_err(|e| e.set_args(None, None))
@@ -197,27 +186,27 @@ impl FileAttr {
 
 const XATTR_NAME_SELINUX: &CStr = c"security.selinux";
 
-pub trait FsPath: Deref<Target = Utf8CStr> {
-    fn follow_link(&self) -> &FsPathFollow {
-        unsafe { mem::transmute(self.deref()) }
+impl Utf8CStr {
+    pub fn follow_link(&self) -> &FsPathFollow {
+        unsafe { mem::transmute(self) }
     }
 
-    fn open(&self, flags: i32) -> OsResult<File> {
-        Ok(File::from(open_fd!(self, flags)?))
+    pub fn open(&self, flags: i32) -> OsResult<File> {
+        Ok(File::from(open_fd(self, flags, 0)?))
     }
 
-    fn create(&self, flags: i32, mode: mode_t) -> OsResult<File> {
-        Ok(File::from(open_fd!(self, O_CREAT | flags, mode)?))
+    pub fn create(&self, flags: i32, mode: mode_t) -> OsResult<File> {
+        Ok(File::from(open_fd(self, O_CREAT | flags, mode)?))
     }
 
-    fn exists(&self) -> bool {
+    pub fn exists(&self) -> bool {
         unsafe {
             let mut st: stat = mem::zeroed();
             libc::lstat(self.as_ptr(), &mut st) == 0
         }
     }
 
-    fn rename_to<'a>(&'a self, name: &'a Utf8CStr) -> OsResult<'a, ()> {
+    pub fn rename_to<'a>(&'a self, name: &'a Utf8CStr) -> OsResult<'a, ()> {
         unsafe {
             libc::rename(self.as_ptr(), name.as_ptr()).check_os_err(
                 "rename",
@@ -227,21 +216,21 @@ pub trait FsPath: Deref<Target = Utf8CStr> {
         }
     }
 
-    fn remove(&self) -> OsResult<()> {
+    pub fn remove(&self) -> OsResult<()> {
         unsafe { libc::remove(self.as_ptr()).check_os_err("remove", Some(self), None) }
     }
 
-    fn remove_all(&self) -> OsResultStatic<()> {
+    pub fn remove_all(&self) -> OsResultStatic<()> {
         let attr = self.get_attr()?;
         if attr.is_dir() {
-            let mut dir = Directory::try_from(open_fd!(self, O_RDONLY | O_CLOEXEC)?)?;
+            let mut dir = Directory::try_from(open_fd(self, O_RDONLY | O_CLOEXEC, 0)?)?;
             dir.remove_all()?;
         }
         Ok(self.remove()?)
     }
 
     #[allow(clippy::unnecessary_cast)]
-    fn read_link(&self, buf: &mut dyn Utf8CStrBuf) -> OsResult<()> {
+    pub fn read_link(&self, buf: &mut dyn Utf8CStrBuf) -> OsResult<()> {
         buf.clear();
         unsafe {
             let r = libc::readlink(self.as_ptr(), buf.as_mut_ptr(), buf.capacity() - 1)
@@ -252,7 +241,7 @@ pub trait FsPath: Deref<Target = Utf8CStr> {
         Ok(())
     }
 
-    fn mkdir(&self, mode: mode_t) -> OsResult<()> {
+    pub fn mkdir(&self, mode: mode_t) -> OsResult<()> {
         unsafe {
             if libc::mkdir(self.as_ptr(), mode) < 0 {
                 if *errno() == EEXIST {
@@ -265,7 +254,7 @@ pub trait FsPath: Deref<Target = Utf8CStr> {
         Ok(())
     }
 
-    fn mkdirs(&self, mode: mode_t) -> OsResultStatic<()> {
+    pub fn mkdirs(&self, mode: mode_t) -> OsResultStatic<()> {
         if self.is_empty() {
             return Ok(());
         }
@@ -290,8 +279,8 @@ pub trait FsPath: Deref<Target = Utf8CStr> {
     }
 
     // Inspired by https://android.googlesource.com/platform/bionic/+/master/libc/bionic/realpath.cpp
-    fn realpath(&self, buf: &mut dyn Utf8CStrBuf) -> OsResult<()> {
-        let fd = open_fd!(self, O_PATH | O_CLOEXEC)?;
+    pub fn realpath(&self, buf: &mut dyn Utf8CStrBuf) -> OsResult<()> {
+        let fd = self.open(O_PATH | O_CLOEXEC)?;
         let mut st1: libc::stat;
         let mut st2: libc::stat;
         let mut skip_check = false;
@@ -314,7 +303,7 @@ pub trait FsPath: Deref<Target = Utf8CStr> {
         Ok(())
     }
 
-    fn get_attr(&self) -> OsResult<FileAttr> {
+    pub fn get_attr(&self) -> OsResult<FileAttr> {
         let mut attr = FileAttr::new();
         unsafe {
             libc::lstat(self.as_ptr(), &mut attr.st).check_os_err("lstat", Some(self), None)?;
@@ -325,7 +314,7 @@ pub trait FsPath: Deref<Target = Utf8CStr> {
         Ok(attr)
     }
 
-    fn set_attr<'a>(&'a self, attr: &'a FileAttr) -> OsResult<'a, ()> {
+    pub fn set_attr<'a>(&'a self, attr: &'a FileAttr) -> OsResult<'a, ()> {
         unsafe {
             if !attr.is_symlink() {
                 libc::chmod(self.as_ptr(), (attr.st.st_mode & 0o777).as_()).check_os_err(
@@ -348,7 +337,7 @@ pub trait FsPath: Deref<Target = Utf8CStr> {
         Ok(())
     }
 
-    fn get_secontext(&self, con: &mut dyn Utf8CStrBuf) -> OsResult<()> {
+    pub fn get_secontext(&self, con: &mut dyn Utf8CStrBuf) -> OsResult<()> {
         unsafe {
             let sz = libc::lgetxattr(
                 self.as_ptr(),
@@ -368,7 +357,7 @@ pub trait FsPath: Deref<Target = Utf8CStr> {
         Ok(())
     }
 
-    fn set_secontext<'a>(&'a self, con: &'a Utf8CStr) -> OsResult<'a, ()> {
+    pub fn set_secontext<'a>(&'a self, con: &'a Utf8CStr) -> OsResult<'a, ()> {
         unsafe {
             libc::lsetxattr(
                 self.as_ptr(),
@@ -381,7 +370,7 @@ pub trait FsPath: Deref<Target = Utf8CStr> {
         }
     }
 
-    fn copy_to(&self, path: &Utf8CStr) -> OsResultStatic<()> {
+    pub fn copy_to(&self, path: &Utf8CStr) -> OsResultStatic<()> {
         let attr = self.get_attr()?;
         if attr.is_dir() {
             path.mkdir(0o777)?;
@@ -411,7 +400,7 @@ pub trait FsPath: Deref<Target = Utf8CStr> {
         Ok(())
     }
 
-    fn move_to(&self, path: &Utf8CStr) -> OsResultStatic<()> {
+    pub fn move_to(&self, path: &Utf8CStr) -> OsResultStatic<()> {
         if path.exists() {
             let attr = path.get_attr()?;
             if attr.is_dir() {
@@ -426,21 +415,23 @@ pub trait FsPath: Deref<Target = Utf8CStr> {
         Ok(())
     }
 
-    fn parent(&self, buf: &mut dyn Utf8CStrBuf) -> bool {
-        buf.clear();
-        if let Some(parent) = Path::new(self.as_str()).parent() {
-            let bytes = parent.as_os_str().as_bytes();
+    pub fn parent_dir(&self) -> Option<&str> {
+        Path::new(self.as_str())
+            .parent()
+            .map(Path::as_os_str)
             // SAFETY: all substring of self is valid UTF-8
-            let parent = unsafe { std::str::from_utf8_unchecked(bytes) };
-            buf.push_str(parent);
-            true
-        } else {
-            false
-        }
+            .map(|s| unsafe { std::str::from_utf8_unchecked(s.as_bytes()) })
+    }
+
+    pub fn file_name(&self) -> Option<&str> {
+        Path::new(self.as_str())
+            .file_name()
+            // SAFETY: all substring of self is valid UTF-8
+            .map(|s| unsafe { std::str::from_utf8_unchecked(s.as_bytes()) })
     }
 
     // ln self path
-    fn link_to(&self, path: &Utf8CStr) -> OsResultStatic<()> {
+    pub fn link_to(&self, path: &Utf8CStr) -> OsResultStatic<()> {
         let attr = self.get_attr()?;
         if attr.is_dir() {
             path.mkdir(0o777)?;
@@ -461,7 +452,7 @@ pub trait FsPath: Deref<Target = Utf8CStr> {
     }
 
     // ln -s target self
-    fn create_symlink_to<'a>(&'a self, target: &'a Utf8CStr) -> OsResult<'a, ()> {
+    pub fn create_symlink_to<'a>(&'a self, target: &'a Utf8CStr) -> OsResult<'a, ()> {
         unsafe {
             libc::symlink(target.as_ptr(), self.as_ptr()).check_os_err(
                 "symlink",
@@ -471,21 +462,17 @@ pub trait FsPath: Deref<Target = Utf8CStr> {
         }
     }
 
-    fn mkfifo(&self, mode: mode_t) -> OsResult<()> {
+    pub fn mkfifo(&self, mode: mode_t) -> OsResult<()> {
         unsafe { libc::mkfifo(self.as_ptr(), mode).check_os_err("mkfifo", Some(self), None) }
     }
 }
 
-impl FsPath for FsPathFollow {
-    fn follow_link(&self) -> &FsPathFollow {
-        self
-    }
-
-    fn exists(&self) -> bool {
+impl FsPathFollow {
+    pub fn exists(&self) -> bool {
         unsafe { libc::access(self.as_ptr(), F_OK) == 0 }
     }
 
-    fn get_attr(&self) -> OsResult<FileAttr> {
+    pub fn get_attr(&self) -> OsResult<FileAttr> {
         let mut attr = FileAttr::new();
         unsafe {
             libc::stat(self.as_ptr(), &mut attr.st).check_os_err("stat", Some(self), None)?;
@@ -496,7 +483,7 @@ impl FsPath for FsPathFollow {
         Ok(attr)
     }
 
-    fn set_attr<'a>(&'a self, attr: &'a FileAttr) -> OsResult<'a, ()> {
+    pub fn set_attr<'a>(&'a self, attr: &'a FileAttr) -> OsResult<'a, ()> {
         unsafe {
             libc::chmod(self.as_ptr(), (attr.st.st_mode & 0o777).as_()).check_os_err(
                 "chmod",
@@ -517,7 +504,7 @@ impl FsPath for FsPathFollow {
         Ok(())
     }
 
-    fn get_secontext(&self, con: &mut dyn Utf8CStrBuf) -> OsResult<()> {
+    pub fn get_secontext(&self, con: &mut dyn Utf8CStrBuf) -> OsResult<()> {
         unsafe {
             let sz = libc::getxattr(
                 self.as_ptr(),
@@ -537,7 +524,7 @@ impl FsPath for FsPathFollow {
         Ok(())
     }
 
-    fn set_secontext<'a>(&'a self, con: &'a Utf8CStr) -> OsResult<'a, ()> {
+    pub fn set_secontext<'a>(&'a self, con: &'a Utf8CStr) -> OsResult<'a, ()> {
         unsafe {
             libc::setxattr(
                 self.as_ptr(),
@@ -851,8 +838,7 @@ fn parse_mount_info_line(line: &str) -> Option<MountInfo> {
 pub fn parse_mount_info(pid: &str) -> Vec<MountInfo> {
     let mut res = vec![];
     let mut path = format!("/proc/{}/mountinfo", pid);
-    if let Ok(fd) = open_fd!(Utf8CStr::from_string(&mut path), O_RDONLY | O_CLOEXEC) {
-        let file = File::from(fd);
+    if let Ok(file) = Utf8CStr::from_string(&mut path).open(O_RDONLY | O_CLOEXEC) {
         BufReader::new(file).foreach_lines(|line| {
             parse_mount_info_line(line)
                 .map(|info| res.push(info))

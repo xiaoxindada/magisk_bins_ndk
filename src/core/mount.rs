@@ -7,8 +7,8 @@ use num_traits::AsPrimitive;
 
 use base::libc::{c_uint, dev_t};
 use base::{
-    FsPath, FsPathBuilder, FsPathMnt, LibcReturn, LoggedResult, MountInfo, ResultExt, Utf8CStr,
-    Utf8CStrBuf, cstr, debug, info, libc, parse_mount_info, warn,
+    FsPathBuilder, LibcReturn, LoggedResult, MountInfo, ResultExt, Utf8CStr, Utf8CStrBuf, cstr,
+    debug, info, libc, parse_mount_info, warn,
 };
 
 use crate::consts::{MODULEMNT, MODULEROOT, PREINITDEV, PREINITMIRR, WORKERDIR};
@@ -74,7 +74,7 @@ pub fn setup_mounts() {
     let _: LoggedResult<()> = try {
         module_mnt.mkdir(0o755)?;
         cstr!(MODULEROOT).bind_mount_to(&module_mnt)?;
-        module_mnt.remount_with_flags(libc::MS_RDONLY)?;
+        module_mnt.remount_mount_point_flags(libc::MS_RDONLY)?;
     };
 }
 
