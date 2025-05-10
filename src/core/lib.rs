@@ -4,6 +4,7 @@
 #![feature(fn_traits)]
 #![feature(unix_socket_ancillary_data)]
 #![feature(unix_socket_peek)]
+#![feature(maybe_uninit_uninit_array)]
 #![allow(clippy::missing_safety_doc)]
 
 use crate::ffi::SuRequest;
