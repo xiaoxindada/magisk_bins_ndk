@@ -33,11 +33,11 @@ jobs:
         run: |
           echo "MAGISK_VERSION=$(cat magisk_config.prop | grep "magisk.versionCode=" | cut -d '=' -f 2)" >> $GITHUB_ENV
           python3 build.py --build_binary
-          ls -al out/**
+          ls -al native/out/**
 
       - name: Compress out
         run: |
-          7za a magisk_bins.7z out/*
+          7za a magisk_bins.7z native/out/*
 
       - name: Upload output to GH-Release
         uses: ncipollo/release-action@v1
@@ -45,5 +45,5 @@ jobs:
           artifacts: "magisk_bins.7z"
           name: "magisk_bins-${{ env.MAGISK_VERSION }}"
           tag: "magisk_bins-${{ env.MAGISK_VERSION }}-${{ github.run_number }}"
-          bodyFile: "out/magisk_version.txt"
+          bodyFile: "native/out/magisk_version.txt"
           token: ${{ secrets.GITHUB_TOKEN }}
