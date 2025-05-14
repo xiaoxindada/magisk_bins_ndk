@@ -156,7 +156,7 @@ build_abis = dict(zip(archs, triples))
 # Common paths
 ndk_root = Path(LOCALDIR, "ndk")
 native_root = Path(LOCALDIR, "native")
-native_out = Path(native_root, "out")
+native_out = native_root / "out"
 ndk_build = ndk_root / "ndk-build"
 rust_bin = ndk_root / "toolchains" / "rust" / "bin"
 llvm_bin = ndk_root / "toolchains" / "llvm" / "prebuilt" / f"{os_name}-x86_64" / "bin"
