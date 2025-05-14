@@ -364,6 +364,7 @@ def run_ndk_build(cmds: list):
 
 
 def move_gen_bins():
+    os.chdir(native_root)
     for arch in build_abis.keys():
         arch_dir = Path("libs", arch)
         out_dir = Path("out", arch)
