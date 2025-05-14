@@ -349,7 +349,7 @@ def setup_ndk():
 
 
 def run_ndk_build(cmds: list):
-    os.chdir(Path(native))
+    os.chdir(Path("native"))
     cmds.append("NDK_PROJECT_PATH=.")
     cmds.append("NDK_APPLICATION_MK=src/Application.mk")
     cmds.append(f"APP_ABI={' '.join(build_abis.keys())}")
