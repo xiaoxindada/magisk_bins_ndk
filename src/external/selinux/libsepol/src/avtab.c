@@ -538,6 +538,12 @@ int avtab_read_item(struct policy_file *fp, uint32_t vers, avtab_t * a,
 	key.target_class = le16_to_cpu(buf16[items++]);
 	key.specified = le16_to_cpu(buf16[items++]);
 
+	if (vers == POLICYDB_VERSION_XPERMS_IOCTL && key.specified & AVTAB_OPTYPE) {
+		key.specified = avtab_optype_to_xperms(key.specified);
+		xperms.specified = AVTAB_XPERMS_IOCTLDRIVER;
+		avtab_android_m_compat = 1;
+	}
+
 	set = 0;
 	for (i = 0; i < ARRAY_SIZE(spec_order); i++) {
 		if (key.specified & spec_order[i])
@@ -553,10 +559,6 @@ int avtab_read_item(struct policy_file *fp, uint32_t vers, avtab_t * a,
 		ERR(fp->handle, "policy version %u does not support extended "
 				"permissions rules and one was specified", vers);
 		return -1;
-	} else if (vers == POLICYDB_VERSION_XPERMS_IOCTL && key.specified & AVTAB_OPTYPE) {
-		key.specified = avtab_optype_to_xperms(key.specified);
-		xperms.specified = AVTAB_XPERMS_IOCTLDRIVER;
-		avtab_android_m_compat = 1;
 	} else if (key.specified & AVTAB_XPERMS) {
 		rc = next_entry(&buf8, fp, sizeof(uint8_t));
 		if (rc < 0) {
@@ -567,7 +569,8 @@ int avtab_read_item(struct policy_file *fp, uint32_t vers, avtab_t * a,
 			(vers == POLICYDB_VERSION_XPERMS_IOCTL &&
 			buf8 != AVTAB_XPERMS_IOCTLFUNCTION &&
 			buf8 != AVTAB_XPERMS_IOCTLDRIVER)) {
-			xperms.specified = AVTAB_XPERMS_IOCTLFUNCTION;
+			if (xperms.specified == 0)
+				xperms.specified = AVTAB_XPERMS_IOCTLFUNCTION;
 			avtab_android_m_compat = 1;
 		} else {
 			xperms.specified = buf8;
