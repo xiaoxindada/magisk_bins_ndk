@@ -155,7 +155,8 @@ build_abis = dict(zip(archs, triples))
 
 # Common paths
 ndk_root = Path(LOCALDIR, "ndk")
-native_out = Path(LOCALDIR, "native", "out")
+native_root = Path(LOCALDIR, "native")
+native_out = Path(native_root, "out")
 ndk_build = ndk_root / "ndk-build"
 rust_bin = ndk_root / "toolchains" / "rust" / "bin"
 llvm_bin = ndk_root / "toolchains" / "llvm" / "prebuilt" / f"{os_name}-x86_64" / "bin"
@@ -349,7 +350,7 @@ def setup_ndk():
 
 
 def run_ndk_build(cmds: list):
-    os.chdir(Path("native"))
+    os.chdir(native_root)
     cmds.append("NDK_PROJECT_PATH=.")
     cmds.append("NDK_APPLICATION_MK=src/Application.mk")
     cmds.append(f"APP_ABI={' '.join(build_abis.keys())}")
