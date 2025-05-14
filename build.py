@@ -318,16 +318,16 @@ def clean_build_src():
 
 
 def setup_ndk():
-    ndk_ver = config["ondkVersion"]
-    url = f"https://github.com/topjohnwu/ondk/releases/download/{ndk_ver}/ondk-{ndk_ver}-{os_name}.tar.xz"
+    ondk_version = config["ondkVersion"]
+    url = f"https://github.com/topjohnwu/ondk/releases/download/{ondk_version}/ondk-{ondk_version}-{os_name}.tar.xz"
     ndk_archive = url.split("/")[-1]
-    ondk_path = Path(LOCALDIR, f"ondk-{ndk_ver}")
+    ondk_path = Path(LOCALDIR, f"ondk-{ondk_version}")
 
     if (
         not op.exists(ndk_archive)
         and not op.exists(ndk_root)
         or op.exists(ndk_root)
-        and open(Path(ndk_root, "ONDK_VERSION")).read().strip(" \t\r\n") != ndk_ver
+        and open(Path(ndk_root, "ONDK_VERSION")).read().strip(" \t\r\n") != ondk_version
     ):
         print(f"Downloading and extracting {ndk_archive}")
         with urllib.request.urlopen(url) as response:
@@ -395,11 +395,18 @@ def update_code():
 
     # Generate magisk_config.prop
     magisk_version = cmd_out(f"cd Magisk && git rev-parse --short=8 HEAD && cd ..").strip(" \t\r\n")
-    with open(Path("Magisk", "gradle.properties"), "r", encoding="utf-8") as i:
-        with open(Path("magisk_config.prop"), "w", encoding="utf-8") as o:
-            for line in i.readlines()[-4:]:
-                o.write(line)
-            o.write(f"magisk.version={magisk_version}\n")
+    ondk_version = None
+    with open(Path("Magisk", "app", "gradle.properties"), "r") as i:
+        with open( Path("Magisk", "build.py"), "r") as b:
+            with open(Path("magisk_config.prop"), "w", encoding="utf-8") as o:
+                for line in i.readlines()[-3:]:
+                    o.write(line)
+                o.write(f"magisk.version={magisk_version}\n")
+                for line in b.readlines():
+                    if "ondk_version" in line:
+                        ondk_version = line.split("=")[1].replace(" ", "").replace('"', '')
+                        break
+                o.write(f"magisk.ondkVersion={ondk_version}\n")
 
     # Fix path defined
     sed_i(
