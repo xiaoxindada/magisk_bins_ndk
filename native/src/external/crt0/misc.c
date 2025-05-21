@@ -198,10 +198,10 @@ int getpagesize() {
     return sz;
 }
 
-// Workaround LTO bug: https://github.com/llvm/llvm-project/issues/61101
-#if defined(__i386__)
-extern long *_GLOBAL_OFFSET_TABLE_;
-long unused() {
-    return *_GLOBAL_OFFSET_TABLE_;
+// Stack protector support
+
+uintptr_t __stack_chk_guard = 0;
+
+void __stack_chk_fail() {
+    abort();
 }
-#endif
