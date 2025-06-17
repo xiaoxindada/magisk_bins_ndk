@@ -34,6 +34,6 @@ jobs:
           git add .
           git commit -sm "Update code date: Asia/Shanghai: $UPDATE_SHANGHAI_TIME
           > Etc/UTC: $UPDATE_ETC_UTC_TIME"
-          git remote rm origin
-          git remote add origin https://xiaoxindada:${{ secrets.GITHUB_TOKEN }}@github.com/xiaoxindada/magisk_bins_ndk.git
+          # git remote rm origin
+          # git remote add origin https://xiaoxindada:${{ secrets.GITHUB_TOKEN }}@github.com/xiaoxindada/magisk_bins_ndk.git
           git push origin main
