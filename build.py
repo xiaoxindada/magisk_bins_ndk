@@ -145,9 +145,9 @@ is_windows = os.name == "nt"
 EXE_EXT = ".exe" if is_windows else ""
 
 # Global vars
-default_targets = {"magisk", "magiskinit", "magiskboot", "magiskpolicy"}
+default_targets = {"magiskboot", "magiskpolicy"}
 support_targets = default_targets | {"resetprop"}
-rust_targets = {"magisk", "magiskinit", "magiskboot", "magiskpolicy"}
+rust_targets = {"magiskboot", "magiskpolicy"}
 archs = {"armeabi-v7a", "x86", "arm64-v8a", "x86_64"}
 config = load_config()
 triples = map(support_abis.get, archs)
