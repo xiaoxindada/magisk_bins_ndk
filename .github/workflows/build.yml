@@ -27,9 +27,10 @@ jobs:
 
       - name:  Setup ndk and strart build
         run: |
-          echo "MAGISK_VERSION=$(cat magisk_config.prop | grep "magisk.versionCode=" | cut -d '=' -f 2)" >> $GITHUB_ENV
           python3 build.py --setup_ndk --build_binary
           ls -al native/out/**
+          echo "MAGISK_VERSION=$(cat magisk_config.prop | grep "magisk.versionCode=" | cut -d '=' -f 2)" >> "$GITHUB_ENV"
+          echo "MAGISK_VERSION=$MAGISK_VERSION"
 
       - name: Compress out
         run: |
@@ -39,7 +40,7 @@ jobs:
         uses: ncipollo/release-action@v1
         with:
           artifacts: "magisk_bins.7z"
-          name: "magisk_bins-$MAGISK_VERSION"
-          tag: "magisk_bins-$MAGISK_VERSION-${{ github.sha }}"
+          name: "magisk_bins-${{ env.MAGISK_VERSION }}"
+          tag: "magisk_bins-${{ env.MAGISK_VERSION }}-${{ github.sha }}"
           bodyFile: "native/out/magisk_version.txt"
           token: ${{ secrets.GITHUB_TOKEN }}
