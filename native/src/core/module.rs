@@ -1,4 +1,4 @@
-use crate::consts::{MODULEMNT, WORKERDIR};
+use crate::consts::{MODULEMNT, MODULEROOT, WORKERDIR};
 use crate::ffi::{ModuleInfo, get_magisk_tmp};
 use crate::load_prop_file;
 use base::{
@@ -9,8 +9,12 @@ use libc::{MS_RDONLY, O_CLOEXEC, O_CREAT, O_RDONLY};
 use std::collections::BTreeMap;
 use std::path::{Component, Path};
 
-const MAGISK_BIN_INJECT_PARTITIONS: [&Utf8CStr; 4] =
-    [cstr!("/system/"), cstr!("/vendor/"), cstr!("/product/"), cstr!("/system_ext/")];
+const MAGISK_BIN_INJECT_PARTITIONS: [&Utf8CStr; 4] = [
+    cstr!("/system/"),
+    cstr!("/vendor/"),
+    cstr!("/product/"),
+    cstr!("/system_ext/"),
+];
 
 const SECONDARY_READ_ONLY_PARTITIONS: [&Utf8CStr; 3] =
     [cstr!("/vendor"), cstr!("/product"), cstr!("/system_ext")];
@@ -40,62 +44,93 @@ fn mount_dummy(reason: &str, src: &Utf8CStr, dest: &Utf8CStr, is_dir: bool) -> O
     bind_mount(reason, src, dest, false)
 }
 
-// File paths that act like a stack, popping out the last element
+// File path that act like a stack, popping out the last element
 // automatically when out of scope. Using Rust's lifetime mechanism,
 // we can ensure the buffer will never be incorrectly copied or modified.
-// After calling append or clone, the mutable reference's lifetime is
+// After calling append or reborrow, the mutable reference's lifetime is
 // "transferred" to the returned object, and the compiler will guarantee
 // that the original mutable reference can only be reused if and only if
 // the newly created instance is destroyed.
 struct PathTracker<'a> {
-    real: &'a mut dyn Utf8CStrBuf,
-    tmp: &'a mut dyn Utf8CStrBuf,
-    real_len: usize,
-    tmp_len: usize,
+    path: &'a mut dyn Utf8CStrBuf,
+    len: usize,
 }
 
 impl PathTracker<'_> {
-    fn from<'a>(real: &'a mut dyn Utf8CStrBuf, tmp: &'a mut dyn Utf8CStrBuf) -> PathTracker<'a> {
-        let real_len = real.len();
-        let tmp_len = tmp.len();
-        PathTracker {
-            real,
-            tmp,
-            real_len,
-            tmp_len,
-        }
+    fn from<'a>(path: &'a mut dyn Utf8CStrBuf) -> PathTracker<'a> {
+        let len = path.len();
+        PathTracker { path, len }
     }
 
     fn append(&mut self, name: &str) -> PathTracker {
-        let real_len = self.real.len();
-        let tmp_len = self.tmp.len();
-        self.real.append_path(name);
-        self.tmp.append_path(name);
+        let len = self.path.len();
+        self.path.append_path(name);
         PathTracker {
-            real: self.real,
-            tmp: self.tmp,
-            real_len,
-            tmp_len,
+            path: self.path,
+            len,
         }
     }
 
-    fn clone(&mut self) -> PathTracker {
-        Self::from(self.real, self.tmp)
+    fn reborrow(&mut self) -> PathTracker {
+        Self::from(self.path)
     }
 }
 
 impl Drop for PathTracker<'_> {
     // Revert back to the original state after finish using the buffer
     fn drop(&mut self) {
-        self.real.truncate(self.real_len);
-        self.tmp.truncate(self.tmp_len);
+        self.path.truncate(self.len);
+    }
+}
+
+struct FilePaths<'a> {
+    real: PathTracker<'a>,
+    worker: PathTracker<'a>,
+    module_mnt: PathTracker<'a>,
+    module_root: PathTracker<'a>,
+}
+
+impl FilePaths<'_> {
+    fn append(&mut self, name: &str) -> FilePaths {
+        FilePaths {
+            real: self.real.append(name),
+            worker: self.worker.append(name),
+            module_mnt: self.module_mnt.append(name),
+            module_root: self.module_root.append(name),
+        }
+    }
+
+    fn reborrow(&mut self) -> FilePaths {
+        FilePaths {
+            real: self.real.reborrow(),
+            worker: self.worker.reborrow(),
+            module_mnt: self.module_mnt.reborrow(),
+            module_root: self.module_root.reborrow(),
+        }
+    }
+
+    fn real(&self) -> &Utf8CStr {
+        self.real.path
+    }
+
+    fn worker(&self) -> &Utf8CStr {
+        self.worker.path
+    }
+
+    fn module_mnt(&self) -> &Utf8CStr {
+        self.module_mnt.path
+    }
+
+    fn module(&self) -> &Utf8CStr {
+        self.module_root.path
     }
 }
 
 enum FsNode {
     Directory { children: FsNodeMap },
     File { src: Utf8CString },
-    Symlink { target: Utf8CString, is_magisk_bin: bool },
+    Symlink { target: Utf8CString },
+    MagiskLink,
     Whiteout,
 }
 
@@ -106,21 +141,20 @@ impl FsNode {
         }
     }
 
-    fn build_from_path(&mut self, path: &mut dyn Utf8CStrBuf) -> LoggedResult<()> {
+    fn collect(&mut self, mut paths: FilePaths) -> LoggedResult<()> {
         let FsNode::Directory { children } = self else {
             return Ok(());
         };
-        let mut dir = Directory::open(path)?;
-        let path_len = path.len();
+        let mut dir = Directory::open(paths.module())?;
 
         while let Some(entry) = dir.read()? {
-            path.truncate(path_len);
-            path.append_path(entry.name());
+            let entry_paths = paths.append(entry.name());
+            let path = entry_paths.module();
             if entry.is_dir() {
                 let node = children
                     .entry(entry.name().to_string())
                     .or_insert_with(FsNode::new_dir);
-                node.build_from_path(path)?;
+                node.collect(entry_paths)?;
             } else if entry.is_symlink() {
                 let mut link = cstr::buf::default();
                 path.read_link(&mut link)?;
@@ -128,7 +162,6 @@ impl FsNode {
                     .entry(entry.name().to_string())
                     .or_insert_with(|| FsNode::Symlink {
                         target: link.to_owned(),
-                        is_magisk_bin: false,
                     });
             } else {
                 if entry.is_char_device() {
@@ -140,10 +173,14 @@ impl FsNode {
                         continue;
                     }
                 }
+                if entry_paths.real().exists() {
+                    clone_attr(entry_paths.real(), path)?;
+                }
                 children
                     .entry(entry.name().to_string())
                     .or_insert_with(|| FsNode::File {
-                        src: path.to_owned(),
+                        // Make sure to mount from module_mnt, not module
+                        src: entry_paths.module_mnt().to_owned(),
                     });
             }
         }
@@ -164,7 +201,7 @@ impl FsNode {
                     true
                 }
             }
-            FsNode::Symlink { .. } | FsNode::Whiteout => true,
+            _ => true,
         }
     }
 
@@ -175,7 +212,7 @@ impl FsNode {
         }
     }
 
-    fn commit(&mut self, mut path: PathTracker, is_root_dir: bool) -> LoggedResult<()> {
+    fn commit(&mut self, mut path: FilePaths, is_root_dir: bool) -> LoggedResult<()> {
         match self {
             FsNode::Directory { children } => {
                 let mut is_tmpfs = false;
@@ -184,7 +221,7 @@ impl FsNode {
                 children.retain(|name, node| {
                     if name == ".replace" {
                         return if is_root_dir {
-                            warn!("Unable to replace '{}', ignore request", path.real);
+                            warn!("Unable to replace '{}', ignore request", path.real());
                             false
                         } else {
                             is_tmpfs = true;
@@ -193,10 +230,10 @@ impl FsNode {
                     }
 
                     let path = path.append(name);
-                    if node.parent_should_be_tmpfs(path.real) {
+                    if node.parent_should_be_tmpfs(path.real()) {
                         if is_root_dir {
                             // Ignore the unsupported child node
-                            warn!("Unable to add '{}', skipped", path.real);
+                            warn!("Unable to add '{}', skipped", path.real());
                             return false;
                         }
                         is_tmpfs = true;
@@ -205,10 +242,10 @@ impl FsNode {
                 });
 
                 if is_tmpfs {
-                    self.commit_tmpfs(path.clone())?;
+                    self.commit_tmpfs(path.reborrow())?;
                     // Transitioning from non-tmpfs to tmpfs, we need to actually mount the
                     // worker dir to dest after all children are committed.
-                    bind_mount("move", path.tmp, path.real, true)?;
+                    bind_mount("move", path.worker(), path.real(), true)?;
                 } else {
                     for (name, node) in children {
                         let path = path.append(name);
@@ -217,26 +254,25 @@ impl FsNode {
                 }
             }
             FsNode::File { src } => {
-                clone_attr(path.real, src)?;
-                bind_mount("mount", src, path.real, false)?;
+                bind_mount("mount", src, path.real(), false)?;
             }
-            FsNode::Symlink { .. } | FsNode::Whiteout => {
-                error!("Unable to handle '{}': parent should be tmpfs", path.real);
+            _ => {
+                error!("Unable to handle '{}': parent should be tmpfs", path.real());
             }
         }
 
         Ok(())
     }
 
-    fn commit_tmpfs(&mut self, mut path: PathTracker) -> LoggedResult<()> {
+    fn commit_tmpfs(&mut self, mut path: FilePaths) -> LoggedResult<()> {
         match self {
             FsNode::Directory { children } => {
-                path.tmp.mkdirs(0o000)?;
-                if path.real.exists() {
-                    clone_attr(path.real, path.tmp)?;
-                } else if let Some(p) = path.tmp.parent_dir() {
+                path.worker().mkdirs(0o000)?;
+                if path.real().exists() {
+                    clone_attr(path.real(), path.worker())?;
+                } else if let Some(p) = path.worker().parent_dir() {
                     let parent = Utf8CString::from(p);
-                    clone_attr(&parent, path.tmp)?;
+                    clone_attr(&parent, path.worker())?;
                 }
 
                 // Check whether a file name '.replace' exist
@@ -251,7 +287,7 @@ impl FsNode {
                                 bind_mount(
                                     "mount",
                                     &src,
-                                    path.real,
+                                    path.real(),
                                     matches!(node, FsNode::Directory { .. }),
                                 )?;
                             }
@@ -264,7 +300,7 @@ impl FsNode {
                 }
 
                 // Traverse the real directory and mount mirrors
-                if let Ok(mut dir) = Directory::open(path.real) {
+                if let Ok(mut dir) = Directory::open(path.real()) {
                     while let Ok(Some(entry)) = dir.read() {
                         if children.contains_key(entry.name().as_str()) {
                             // Should not be mirrored, next
@@ -281,11 +317,10 @@ impl FsNode {
                                 entry.name().to_string(),
                                 FsNode::Symlink {
                                     target: link.to_owned(),
-                                    is_magisk_bin: false,
                                 },
                             );
                         } else {
-                            mount_dummy("mirror", path.real, path.tmp, entry.is_dir())?;
+                            mount_dummy("mirror", path.real(), path.worker(), entry.is_dir())?;
                         }
                     }
                 }
@@ -297,21 +332,28 @@ impl FsNode {
                 }
             }
             FsNode::File { src } => {
-                if path.real.exists() {
-                    clone_attr(path.real, src)?;
-                }
-                mount_dummy("mount", src, path.tmp, false)?;
+                mount_dummy("mount", src, path.worker(), false)?;
             }
-            FsNode::Symlink { target, is_magisk_bin } => {
-                module_log!("mklink", path.tmp, target);
-                path.tmp.create_symlink_to(target)?;
-                // Avoid cloneing existing su attributes to our su
-                if !*is_magisk_bin && path.real.exists() {
-                    clone_attr(path.real, path.tmp)?;
+            FsNode::Symlink { target } => {
+                module_log!("mklink", path.worker(), target);
+                path.worker().create_symlink_to(target)?;
+                if path.real().exists() {
+                    clone_attr(path.real(), path.worker())?;
+                }
+            }
+            FsNode::MagiskLink => {
+                if let Some(name) = path.real().file_name()
+                    && name == "supolicy"
+                {
+                    module_log!("mklink", path.worker(), "./magiskpolicy");
+                    path.worker().create_symlink_to(cstr!("./magiskpolicy"))?;
+                } else {
+                    module_log!("mklink", path.worker(), "./magisk");
+                    path.worker().create_symlink_to(cstr!("./magisk"))?;
                 }
             }
             FsNode::Whiteout => {
-                module_log!("delete", path.real, "null");
+                module_log!("delete", path.real(), "null");
             }
         }
         Ok(())
@@ -349,34 +391,15 @@ fn inject_magisk_bins(system: &mut FsNode) {
         );
 
         // Inject applet symlinks
-
-        children.insert(
-            "su".to_string(),
-            FsNode::Symlink {
-                target: Utf8CString::from("./magisk"),
-                is_magisk_bin: true,
-            },
-        );
-        children.insert(
-            "resetprop".to_string(),
-            FsNode::Symlink {
-                target: Utf8CString::from("./magisk"),
-                is_magisk_bin: true,
-            },
-        );
-        children.insert(
-            "supolicy".to_string(),
-            FsNode::Symlink {
-                target: Utf8CString::from("./magiskpolicy"),
-                is_magisk_bin: true,
-            },
-        );
+        children.insert("su".to_string(), FsNode::MagiskLink);
+        children.insert("resetprop".to_string(), FsNode::MagiskLink);
+        children.insert("supolicy".to_string(), FsNode::MagiskLink);
     }
 
     // Strip /system prefix to insert correct node
     fn strip_system_prefix(orig_item: &str) -> String {
         match orig_item.strip_prefix("/system/") {
-            Some(rest) => format!("/{}", rest),
+            Some(rest) => format!("/{rest}"),
             None => orig_item.to_string(),
         }
     }
@@ -386,7 +409,10 @@ fn inject_magisk_bins(system: &mut FsNode) {
 
     for orig_item in path_env.split(':') {
         // Filter not suitbale paths
-        if !MAGISK_BIN_INJECT_PARTITIONS.iter().any(|p| orig_item.starts_with(p.as_str())) {
+        if !MAGISK_BIN_INJECT_PARTITIONS
+            .iter()
+            .any(|p| orig_item.starts_with(p.as_str()))
+        {
             continue;
         }
         // Flatten apex path is not suitable too
@@ -395,7 +421,7 @@ fn inject_magisk_bins(system: &mut FsNode) {
         }
 
         // Override existing su first
-        let su_path = Utf8CString::from(format!("{}/su", orig_item));
+        let su_path = Utf8CString::from(format!("{orig_item}/su"));
         if su_path.exists() {
             let item = strip_system_prefix(orig_item);
             candidates.push((item, 0));
@@ -403,21 +429,25 @@ fn inject_magisk_bins(system: &mut FsNode) {
         }
 
         let path = Utf8CString::from(orig_item);
-        if let Ok(attr) = path.get_attr() && (attr.st.st_mode & 0x0001) != 0 {
-            if let Ok(mut dir) = Directory::open(&path) {
-                let mut count = 0;
-                if let Err(_) = dir.pre_order_walk(|e| {
+        if let Ok(attr) = path.get_attr()
+            && (attr.st.st_mode & 0x0001) != 0
+            && let Ok(mut dir) = Directory::open(&path)
+        {
+            let mut count = 0;
+            if dir
+                .pre_order_walk(|e| {
                     if e.is_file() {
                         count += 1;
                     }
                     Ok(WalkResult::Continue)
-                }) {
-                    // Skip, we cannot ensure the result is correct
-                    continue;
-                }
-                let item = strip_system_prefix(orig_item);
-                candidates.push((item, count));
+                })
+                .is_err()
+            {
+                // Skip, we cannot ensure the result is correct
+                continue;
             }
+            let item = strip_system_prefix(orig_item);
+            candidates.push((item, count));
         }
     }
 
@@ -516,40 +546,56 @@ fn inject_zygisk_bins(system: &mut FsNode, name: &str) {
 pub fn load_modules(module_list: &[ModuleInfo], zygisk_name: &str) {
     let mut system = FsNode::new_dir();
 
+    // Build all the base "prefix" paths
+    let mut root = cstr::buf::default().join_path("/");
+
+    let mut module_dir = cstr::buf::default().join_path(MODULEROOT);
+
+    let mut module_mnt = cstr::buf::default()
+        .join_path(get_magisk_tmp())
+        .join_path(MODULEMNT);
+
+    let mut worker = cstr::buf::default()
+        .join_path(get_magisk_tmp())
+        .join_path(WORKERDIR);
+
+    // Create a collection of all relevant paths
+    let mut root_paths = FilePaths {
+        real: PathTracker::from(&mut root),
+        worker: PathTracker::from(&mut worker),
+        module_mnt: PathTracker::from(&mut module_mnt),
+        module_root: PathTracker::from(&mut module_dir),
+    };
+
     // Step 1: Create virtual filesystem tree
     //
     // In this step, there is zero logic applied during tree construction; we simply collect
     // and record the union of all module filesystem trees under each of their /system directory.
 
-    let mut path = cstr::buf::default()
-        .join_path(get_magisk_tmp())
-        .join_path(MODULEMNT);
-    let len = path.len();
     for info in module_list {
-        path.truncate(len);
-        path.append_path(&info.name);
-
-        // Read props
-        let module_path_len = path.len();
-        path.append_path("system.prop");
-        if path.exists() {
-            // Do NOT go through property service as it could cause boot lock
-            load_prop_file(&path, true);
+        let mut module_paths = root_paths.append(&info.name);
+        {
+            // Read props
+            let prop = module_paths.append("system.prop");
+            if prop.module().exists() {
+                // Do NOT go through property service as it could cause boot lock
+                load_prop_file(prop.module(), true);
+            }
         }
-
-        // Check whether skip mounting
-        path.truncate(module_path_len);
-        path.append_path("skip_mount");
-        if path.exists() {
-            continue;
+        {
+            // Check whether skip mounting
+            let skip = module_paths.append("skip_mount");
+            if skip.module().exists() {
+                continue;
+            }
         }
-
-        // Double check whether the system folder exists
-        path.truncate(module_path_len);
-        path.append_path("system");
-        if path.exists() {
-            info!("{}: loading module files", &info.name);
-            system.build_from_path(&mut path).log_ok();
+        {
+            // Double check whether the system folder exists
+            let sys = module_paths.append("system");
+            if sys.module().exists() {
+                info!("{}: loading module files", &info.name);
+                system.collect(sys).log_ok();
+            }
         }
     }
 
@@ -592,16 +638,6 @@ pub fn load_modules(module_list: &[ModuleInfo], zygisk_name: &str) {
     }
     roots.insert("system", system);
 
-    // Reuse the path buffer
-    path.clear();
-    path.push_str("/");
-
-    // Build the base worker directory path
-    let mut tmp = cstr::buf::default()
-        .join_path(get_magisk_tmp())
-        .join_path(WORKERDIR);
-
-    let mut tracker = PathTracker::from(&mut path, &mut tmp);
     for (dir, mut root) in roots {
         // Step 4: Convert virtual filesystem tree into concrete operations
         //
@@ -610,7 +646,7 @@ pub fn load_modules(module_list: &[ModuleInfo], zygisk_name: &str) {
         // The "core" of the logic is to decide which directories need to be rebuilt in the
         // tmpfs worker directory, and real sub-nodes need to be mirrored inside it.
 
-        let path = tracker.append(dir);
+        let path = root_paths.append(dir);
         root.commit(path, true).log_ok();
     }
 }
