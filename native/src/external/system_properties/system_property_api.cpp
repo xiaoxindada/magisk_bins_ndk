@@ -26,10 +26,8 @@
  * SUCH DAMAGE.
  */
 
-#define _REALLY_INCLUDE_SYS__SYSTEM_PROPERTIES_H_
-#include <api/_system_properties.h>
+#include <api/system_properties.h>
 
-#include <async_safe/CHECK.h>
 #include <system_properties/prop_area.h>
 #include <system_properties/system_properties.h>
 

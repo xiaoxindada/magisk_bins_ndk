@@ -34,15 +34,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <api/system_properties.h>
 #include <sys/types.h>
 #include <sys/uio.h>
 #include <sys/un.h>
-#define _REALLY_INCLUDE_SYS__SYSTEM_PROPERTIES_H_
-#include <api/_system_properties.h>
 #include <unistd.h>
-
-#include <async_safe/log.h>
-#include <async_safe/CHECK.h>
 
 #include "private/bionic_defs.h"
 #include "platform/bionic/macros.h"

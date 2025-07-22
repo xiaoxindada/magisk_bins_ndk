@@ -3,6 +3,16 @@
 #undef __INTRODUCED_IN
 #define __INTRODUCED_IN(...)
 
+#undef __BIONIC_AVAILABILITY_GUARD
+#define __BIONIC_AVAILABILITY_GUARD(...) 1
+
+// <async_safe/CHECK.h>
+#define CHECK(x)  /* NOP */
+
+// <async_safe/log.h>
+#define async_safe_format_buffer snprintf
+#define async_safe_format_log(...)  /* NOP */
+
 // Rename symbols
 #pragma redefine_extname __system_property_set _system_property_set2
 #pragma redefine_extname __system_property_find _system_property_find2
