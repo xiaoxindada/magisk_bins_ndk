@@ -12,7 +12,6 @@ import shutil
 import stat
 import subprocess
 import tarfile
-import textwrap
 import urllib.request
 
 # Environment checks
@@ -147,7 +146,7 @@ EXE_EXT = ".exe" if is_windows else ""
 # Global vars
 default_targets = {"magiskboot", "magiskpolicy"}
 support_targets = default_targets | {"resetprop"}
-rust_targets = {"magiskboot", "magiskpolicy"}
+rust_targets = {"magisk", "magiskinit", "magiskboot", "magiskpolicy"}
 archs = {"armeabi-v7a", "x86", "arm64-v8a", "x86_64"}
 config = load_config()
 triples = map(support_abis.get, archs)
@@ -274,6 +273,7 @@ def build_cpp_src(targets: set):
 
     if cmds:
         run_ndk_build(cmds)
+        collect_ndk_build()
 
     cmds.clear()
 
@@ -286,12 +286,14 @@ def build_cpp_src(targets: set):
     if cmds:
         cmds.append("B_CRT0=1")
         run_ndk_build(cmds)
+        collect_ndk_build()
 
     if clean:
         clean_elf()
 
 
 def clean_elf():
+    os.chdir(native_root)
     cargo_toml = Path(LOCALDIR, "tools", "elf-cleaner", "Cargo.toml")
     cmds = ["run", "--release", "--manifest-path", cargo_toml]
     cmds.append("--")
@@ -305,9 +307,13 @@ def clean_elf():
 def clean_build_src():
     rm_rf(rust_out)
     rm_rf(native_gen_path)
+    os.chdir(native_root)
     libinit_lds = [l for l in glob.glob("out/*/libinit-ld*")]
     for libinit_ld in libinit_lds:
         rm(libinit_ld)
+    staticlibs = [l for l in glob.glob("out/*/*.a")]
+    for lib in staticlibs:
+        rm(lib)
 
 
 def setup_ndk():
@@ -341,36 +347,34 @@ def setup_ndk():
     mv(ondk_path, ndk_root)
 
 
+def collect_ndk_build():
+    for arch in build_abis.keys():
+        arch_dir = Path(native_root, "libs", arch)
+        out_dir = Path(native_root, "out", arch)
+        for source in arch_dir.iterdir():
+            target = out_dir / source.name
+            mv(source, target)
+
+
 def run_ndk_build(cmds: list):
     os.chdir(native_root)
     cmds.append("NDK_PROJECT_PATH=.")
     cmds.append("NDK_APPLICATION_MK=src/Application.mk")
     cmds.append(f"APP_ABI={' '.join(build_abis.keys())}")
-    cmds.append(f"-j{cpu_count}")
+    cmds.append(f"-j{min(8, cpu_count)}")
     if not release:
         cmds.append("MAGISK_DEBUG=1")
     proc = execv([ndk_build, *cmds])
     if proc.returncode != 0:
         error("Build binary failed!")
-    move_gen_bins()
-
-
-def move_gen_bins():
-    os.chdir(native_root)
-    for arch in build_abis.keys():
-        arch_dir = Path("libs", arch)
-        out_dir = Path("out", arch)
-        for source in arch_dir.iterdir():
-            target = out_dir / source.name
-            mv(source, target)
-            rm(Path(out_dir, f"lib{source.name}-rs.a"))
+    os.chdir("..")
 
 
 def run_cargo(cmds):
     env = os.environ.copy()
     env["PATH"] = f'{rust_bin}{os.pathsep}{env["PATH"]}'
     env["CARGO_BUILD_RUSTC"] = str(rust_bin / f"rustc{EXE_EXT}")
-    env["CARGO_BUILD_RUSTFLAGS"] = f"-Z threads={cpu_count}"
+    env["CARGO_BUILD_RUSTFLAGS"] = f"-Z threads={min(8, cpu_count)}"
     return execv([cargo, *cmds], env)
 
 
@@ -388,7 +392,9 @@ def update_code():
         error("git clone failed!")
 
     # Generate magisk_config.prop
-    magisk_version = cmd_out(f"cd Magisk && git rev-parse --short=8 HEAD && cd ..").strip(" \t\r\n")
+    magisk_version = cmd_out(
+        f"cd Magisk && git rev-parse --short=8 HEAD && cd .."
+    ).strip(" \t\r\n")
     ondk_version = None
     with open(Path("Magisk", "app", "gradle.properties"), "r") as i:
         with open(Path("Magisk", "build.py"), "r") as b:
@@ -398,7 +404,9 @@ def update_code():
                 o.write(f"magisk.version={magisk_version}\n")
                 for line in b.readlines():
                     if "ondk_version" in line:
-                        ondk_version = line.split("=")[1].replace(" ", "").replace('"', '')
+                        ondk_version = (
+                            line.split("=")[1].replace(" ", "").replace('"', "")
+                        )
                         break
                 o.write(f"magisk.ondkVersion={ondk_version}\n")
 
