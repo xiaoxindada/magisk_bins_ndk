@@ -147,7 +147,7 @@ EXE_EXT = ".exe" if is_windows else ""
 # Global vars
 default_targets = {"magiskboot", "magiskpolicy"}
 support_targets = default_targets | {"resetprop"}
-rust_targets = {"magiskboot", "magiskpolicy"}
+rust_targets = {"magisk", "magiskinit", "magiskboot", "magiskpolicy"}
 archs = {"armeabi-v7a", "x86", "arm64-v8a", "x86_64"}
 config = load_config()
 triples = map(support_abis.get, archs)
@@ -359,7 +359,7 @@ def move_gen_bins():
     os.chdir(native_root)
     for arch in build_abis.keys():
         arch_dir = Path("libs", arch)
-        out_dir = Path("out", arch)
+        out_dir = Path(native_out, arch)
         for source in arch_dir.iterdir():
             target = out_dir / source.name
             mv(source, target)
