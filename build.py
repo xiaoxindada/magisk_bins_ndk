@@ -15,6 +15,7 @@ import tarfile
 import textwrap
 import urllib.request
 
+
 # Environment checks
 if not sys.version_info >= (3, 8):
     error("Requires Python 3.8+")
@@ -147,7 +148,7 @@ EXE_EXT = ".exe" if is_windows else ""
 # Global vars
 default_targets = {"magiskboot", "magiskpolicy"}
 support_targets = default_targets | {"resetprop"}
-rust_targets = {"magiskboot", "magiskpolicy"}
+rust_targets = {"magisk", "magiskinit", "magiskboot", "magiskpolicy"}
 archs = {"armeabi-v7a", "x86", "arm64-v8a", "x86_64"}
 config = load_config()
 triples = map(support_abis.get, archs)
@@ -213,6 +214,7 @@ def build_native():
     build_rust_src(targets)
     build_cpp_src(targets)
     clean_build_src()
+    move_and_clean_gen_src()
     with open(Path(native_out, "magisk_version.txt"), "w", encoding="utf-8") as f:
         f.write(f"magisk.versionCode={config['versionCode']}\n")
 
@@ -305,9 +307,18 @@ def clean_elf():
 def clean_build_src():
     rm_rf(rust_out)
     rm_rf(native_gen_path)
+
+
+def move_and_clean_gen_src():
+    os.chdir(native_root)
+    for d in os.listdir("libs"):
+        mv(d, native_out)
     libinit_lds = [l for l in glob.glob("out/*/libinit-ld*")]
     for libinit_ld in libinit_lds:
         rm(libinit_ld)
+    staticlibs = [l for l in glob.glob("out/*/*.a")]
+    for lib in staticlibs:
+        rm(lib)
 
 
 def setup_ndk():
@@ -352,18 +363,6 @@ def run_ndk_build(cmds: list):
     proc = execv([ndk_build, *cmds])
     if proc.returncode != 0:
         error("Build binary failed!")
-    move_gen_bins()
-
-
-def move_gen_bins():
-    os.chdir(native_root)
-    for arch in build_abis.keys():
-        arch_dir = Path("libs", arch)
-        out_dir = Path("out", arch)
-        for source in arch_dir.iterdir():
-            target = out_dir / source.name
-            mv(source, target)
-            rm(Path(out_dir, f"lib{source.name}-rs.a"))
 
 
 def run_cargo(cmds):
@@ -388,7 +387,9 @@ def update_code():
         error("git clone failed!")
 
     # Generate magisk_config.prop
-    magisk_version = cmd_out(f"cd Magisk && git rev-parse --short=8 HEAD && cd ..").strip(" \t\r\n")
+    magisk_version = cmd_out(
+        f"cd Magisk && git rev-parse --short=8 HEAD && cd .."
+    ).strip(" \t\r\n")
     ondk_version = None
     with open(Path("Magisk", "app", "gradle.properties"), "r") as i:
         with open(Path("Magisk", "build.py"), "r") as b:
@@ -398,7 +399,9 @@ def update_code():
                 o.write(f"magisk.version={magisk_version}\n")
                 for line in b.readlines():
                     if "ondk_version" in line:
-                        ondk_version = line.split("=")[1].replace(" ", "").replace('"', '')
+                        ondk_version = (
+                            line.split("=")[1].replace(" ", "").replace('"', "")
+                        )
                         break
                 o.write(f"magisk.ondkVersion={ondk_version}\n")
 
