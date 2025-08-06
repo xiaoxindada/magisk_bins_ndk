@@ -1,14 +1,21 @@
-use crate::consts::{MODULEMNT, MODULEROOT, WORKERDIR};
+use crate::consts::{MODULEMNT, MODULEROOT, MODULEUPGRADE, WORKERDIR};
 use crate::daemon::MagiskD;
-use crate::ffi::{get_magisk_tmp, get_zygisk_lib_name};
-use crate::load_prop_file;
-use base::{
-    Directory, FsPathBuilder, LoggedResult, OsResultStatic, ResultExt, Utf8CStr, Utf8CStrBuf,
-    Utf8CString, WalkResult, clone_attr, cstr, debug, error, info, libc, warn,
+use crate::ffi::{
+    ModuleInfo, exec_module_scripts, exec_script, get_magisk_tmp, get_zygisk_lib_name,
+    load_prop_file, set_zygisk_prop,
 };
-use libc::{MS_RDONLY, O_CLOEXEC, O_CREAT, O_RDONLY};
+use crate::mount::setup_module_mount;
+use base::{
+    DirEntry, Directory, FsPathBuilder, LibcReturn, LoggedResult, OsResultStatic, ResultExt,
+    Utf8CStr, Utf8CStrBuf, Utf8CString, WalkResult, clone_attr, cstr, debug, error, info, libc,
+    raw_cstr, warn,
+};
+use libc::{AT_REMOVEDIR, MS_RDONLY, O_CLOEXEC, O_CREAT, O_RDONLY};
 use std::collections::BTreeMap;
+use std::os::fd::{AsRawFd, IntoRawFd};
 use std::path::{Component, Path};
+use std::ptr;
+use std::sync::atomic::Ordering;
 
 const MAGISK_BIN_INJECT_PARTITIONS: [&Utf8CStr; 4] = [
     cstr!("/system/"),
@@ -548,112 +555,328 @@ fn inject_zygisk_bins(system: &mut FsNode) {
     }
 }
 
-impl MagiskD {
-    pub fn apply_modules(&self) {
-        let mut system = FsNode::new_dir();
+fn apply_modules(zygisk: bool, module_list: &[ModuleInfo]) {
+    let mut system = FsNode::new_dir();
 
-        // Build all the base "prefix" paths
-        let mut root = cstr::buf::default().join_path("/");
+    // Build all the base "prefix" paths
+    let mut root = cstr::buf::default().join_path("/");
 
-        let mut module_dir = cstr::buf::default().join_path(MODULEROOT);
+    let mut module_dir = cstr::buf::default().join_path(MODULEROOT);
 
-        let mut module_mnt = cstr::buf::default()
-            .join_path(get_magisk_tmp())
-            .join_path(MODULEMNT);
+    let mut module_mnt = cstr::buf::default()
+        .join_path(get_magisk_tmp())
+        .join_path(MODULEMNT);
 
-        let mut worker = cstr::buf::default()
-            .join_path(get_magisk_tmp())
-            .join_path(WORKERDIR);
+    let mut worker = cstr::buf::default()
+        .join_path(get_magisk_tmp())
+        .join_path(WORKERDIR);
 
-        // Create a collection of all relevant paths
-        let mut root_paths = FilePaths {
-            real: PathTracker::from(&mut root),
-            worker: PathTracker::from(&mut worker),
-            module_mnt: PathTracker::from(&mut module_mnt),
-            module_root: PathTracker::from(&mut module_dir),
-        };
+    // Create a collection of all relevant paths
+    let mut root_paths = FilePaths {
+        real: PathTracker::from(&mut root),
+        worker: PathTracker::from(&mut worker),
+        module_mnt: PathTracker::from(&mut module_mnt),
+        module_root: PathTracker::from(&mut module_dir),
+    };
 
-        // Step 1: Create virtual filesystem tree
-        //
-        // In this step, there is zero logic applied during tree construction; we simply collect and
-        // record the union of all module filesystem trees under each of their /system directory.
+    // Step 1: Create virtual filesystem tree
+    //
+    // In this step, there is zero logic applied during tree construction; we simply collect and
+    // record the union of all module filesystem trees under each of their /system directory.
 
-        for info in self.module_list.get().iter().flat_map(|v| v.iter()) {
-            let mut module_paths = root_paths.append(&info.name);
-            {
-                // Read props
-                let prop = module_paths.append("system.prop");
-                if prop.module().exists() {
-                    // Do NOT go through property service as it could cause boot lock
-                    load_prop_file(prop.module(), true);
-                }
+    for info in module_list {
+        let mut module_paths = root_paths.append(&info.name);
+        {
+            // Read props
+            let prop = module_paths.append("system.prop");
+            if prop.module().exists() {
+                // Do NOT go through property service as it could cause boot lock
+                load_prop_file(prop.module(), true);
             }
-            {
-                // Check whether skip mounting
-                let skip = module_paths.append("skip_mount");
-                if skip.module().exists() {
-                    continue;
-                }
+        }
+        {
+            // Check whether skip mounting
+            let skip = module_paths.append("skip_mount");
+            if skip.module().exists() {
+                continue;
             }
+        }
+        {
+            // Double check whether the system folder exists
+            let sys = module_paths.append("system");
+            if sys.module().exists() {
+                info!("{}: loading module files", &info.name);
+                system.collect(sys).log_ok();
+            }
+        }
+    }
+
+    // Step 2: Inject custom files
+    //
+    // Magisk provides some built-in functionality that requires augmenting the filesystem.
+    // We expose several cmdline tools (e.g. su) into PATH, and the zygisk shared library
+    // has to also be added into the default LD_LIBRARY_PATH for code injection.
+    // We directly inject file nodes into the virtual filesystem tree we built in the previous
+    // step, treating Magisk just like a special "module".
+
+    if get_magisk_tmp() != "/sbin" || get_path_env().split(":").all(|s| s != "/sbin") {
+        inject_magisk_bins(&mut system);
+    }
+    if zygisk {
+        inject_zygisk_bins(&mut system);
+    }
+
+    // Step 3: Extract all supported read-only partition roots
+    //
+    // For simplicity and backwards compatibility on older Android versions, when constructing
+    // Magisk modules, we always assume that there is only a single read-only partition mounted
+    // at /system. However, on modern Android there are actually multiple read-only partitions
+    // mounted at their respective paths. We need to extract these subtrees out of the main
+    // tree and treat them as individual trees.
+
+    let mut roots = BTreeMap::new(); /* mapOf(partition_name -> FsNode) */
+    if let FsNode::Directory { children } = &mut system {
+        for dir in SECONDARY_READ_ONLY_PARTITIONS {
+            // Only treat these nodes as root iff it is actually a directory in rootdir
+            if let Ok(attr) = dir.get_attr()
+                && attr.is_dir()
             {
-                // Double check whether the system folder exists
-                let sys = module_paths.append("system");
-                if sys.module().exists() {
-                    info!("{}: loading module files", &info.name);
-                    system.collect(sys).log_ok();
+                let name = dir.trim_start_matches('/');
+                if let Some(root) = children.remove(name) {
+                    roots.insert(name, root);
                 }
             }
         }
+    }
+    roots.insert("system", system);
 
-        // Step 2: Inject custom files
+    for (dir, mut root) in roots {
+        // Step 4: Convert virtual filesystem tree into concrete operations
         //
-        // Magisk provides some built-in functionality that requires augmenting the filesystem.
-        // We expose several cmdline tools (e.g. su) into PATH, and the zygisk shared library
-        // has to also be added into the default LD_LIBRARY_PATH for code injection.
-        // We directly inject file nodes into the virtual filesystem tree we built in the previous
-        // step, treating Magisk just like a special "module".
+        // Compare the virtual filesystem tree we constructed against the real filesystem
+        // structure on-device to generate a series of "operations".
+        // The "core" of the logic is to decide which directories need to be rebuilt in the
+        // tmpfs worker directory, and real sub-nodes need to be mirrored inside it.
 
-        if get_magisk_tmp() != "/sbin" || get_path_env().split(":").all(|s| s != "/sbin") {
-            inject_magisk_bins(&mut system);
+        let path = root_paths.append(dir);
+        root.commit(path, true).log_ok();
+    }
+}
+
+fn upgrade_modules() -> LoggedResult<()> {
+    let mut upgrade = Directory::open(cstr!(MODULEUPGRADE))?;
+    let ufd = upgrade.as_raw_fd();
+    let root = Directory::open(cstr!(MODULEROOT))?;
+    while let Some(e) = upgrade.read()? {
+        if !e.is_dir() {
+            continue;
         }
-        if self.zygisk_enabled() {
-            inject_zygisk_bins(&mut system);
+        let module_name = e.name();
+        let mut disable = false;
+        // Cleanup old module if exists
+        if root.contains_path(module_name) {
+            let module = root.open_as_dir_at(module_name)?;
+            // If the old module is disabled, we need to also disable the new one
+            disable = module.contains_path(cstr!("disable"));
+            module.remove_all()?;
+            root.unlink_at(module_name, AT_REMOVEDIR)?;
+        }
+        info!("Upgrade / New module: {module_name}");
+        unsafe {
+            libc::renameat(
+                ufd,
+                module_name.as_ptr(),
+                root.as_raw_fd(),
+                module_name.as_ptr(),
+            )
+            .check_os_err("renameat", Some(module_name), None)?;
+        }
+        if disable {
+            let path = cstr::buf::default()
+                .join_path(module_name)
+                .join_path("disable");
+            let _ = root.open_as_file_at(&path, O_RDONLY | O_CREAT | O_CLOEXEC, 0)?;
+        }
+    }
+    upgrade.remove_all()?;
+    cstr!(MODULEUPGRADE).remove()?;
+    Ok(())
+}
+
+fn for_each_module(mut func: impl FnMut(&DirEntry) -> LoggedResult<()>) -> LoggedResult<()> {
+    let mut root = Directory::open(cstr!(MODULEROOT))?;
+    while let Some(ref e) = root.read()? {
+        if e.is_dir() && e.name() != ".core" {
+            func(e)?;
+        }
+    }
+    Ok(())
+}
+
+pub fn disable_modules() {
+    for_each_module(|e| {
+        let dir = e.open_as_dir()?;
+        dir.open_as_file_at(cstr!("disable"), O_RDONLY | O_CREAT | O_CLOEXEC, 0)?;
+        Ok(())
+    })
+    .log_ok();
+}
+
+fn run_uninstall_script(module_name: &Utf8CStr) {
+    let script = cstr::buf::default()
+        .join_path(MODULEROOT)
+        .join_path(module_name)
+        .join_path("uninstall.sh");
+    exec_script(&script);
+}
+
+pub fn remove_modules() {
+    for_each_module(|e| {
+        let dir = e.open_as_dir()?;
+        if dir.contains_path(cstr!("uninstall.sh")) {
+            run_uninstall_script(e.name());
+        }
+        Ok(())
+    })
+    .log_ok();
+    cstr!(MODULEROOT).remove_all().log_ok();
+}
+
+fn collect_modules(zygisk_enabled: bool, open_zygisk: bool) -> Vec<ModuleInfo> {
+    let mut modules = Vec::new();
+
+    #[allow(unused_mut)] // It's possible that z32 and z64 are unused
+    for_each_module(|e| {
+        let name = e.name();
+        let dir = e.open_as_dir()?;
+        if dir.contains_path(cstr!("remove")) {
+            info!("{name}: remove");
+            if dir.contains_path(cstr!("uninstall.sh")) {
+                run_uninstall_script(name);
+            }
+            dir.remove_all()?;
+            e.unlink()?;
+            return Ok(());
+        }
+        dir.unlink_at(cstr!("update"), 0).ok();
+        if dir.contains_path(cstr!("disable")) {
+            return Ok(());
         }
 
-        // Step 3: Extract all supported read-only partition roots
-        //
-        // For simplicity and backwards compatibility on older Android versions, when constructing
-        // Magisk modules, we always assume that there is only a single read-only partition mounted
-        // at /system. However, on modern Android there are actually multiple read-only partitions
-        // mounted at their respective paths. We need to extract these subtrees out of the main
-        // tree and treat them as individual trees.
+        let mut z32 = -1;
+        let mut z64 = -1;
 
-        let mut roots = BTreeMap::new(); /* mapOf(partition_name -> FsNode) */
-        if let FsNode::Directory { children } = &mut system {
-            for dir in SECONDARY_READ_ONLY_PARTITIONS {
-                // Only treat these nodes as root iff it is actually a directory in rootdir
-                if let Ok(attr) = dir.get_attr()
-                    && attr.is_dir()
+        let is_zygisk = dir.contains_path(cstr!("zygisk"));
+
+        if zygisk_enabled {
+            // Riru and its modules are not compatible with zygisk
+            if name == "riru-core" || dir.contains_path(cstr!("riru")) {
+                return Ok(());
+            }
+
+            fn open_fd_safe(dir: &Directory, name: &Utf8CStr) -> i32 {
+                dir.open_as_file_at(name, O_RDONLY | O_CLOEXEC, 0)
+                    .log()
+                    .map(IntoRawFd::into_raw_fd)
+                    .unwrap_or(-1)
+            }
+
+            if open_zygisk && is_zygisk {
+                #[cfg(target_arch = "arm")]
                 {
-                    let name = dir.trim_start_matches('/');
-                    if let Some(root) = children.remove(name) {
-                        roots.insert(name, root);
+                    z32 = open_fd_safe(&dir, cstr!("zygisk/armeabi-v7a.so"));
+                }
+                #[cfg(target_arch = "aarch64")]
+                {
+                    z32 = open_fd_safe(&dir, cstr!("zygisk/armeabi-v7a.so"));
+                    z64 = open_fd_safe(&dir, cstr!("zygisk/arm64-v8a.so"));
+                }
+                #[cfg(target_arch = "x86")]
+                {
+                    z32 = open_fd_safe(&dir, cstr!("zygisk/x86.so"));
+                }
+                #[cfg(target_arch = "x86_64")]
+                {
+                    z32 = open_fd_safe(&dir, cstr!("zygisk/x86.so"));
+                    z64 = open_fd_safe(&dir, cstr!("zygisk/x86_64.so"));
+                }
+                #[cfg(target_arch = "riscv64")]
+                {
+                    z64 = open_fd_safe(&dir, cstr!("zygisk/riscv64.so"));
+                }
+                dir.unlink_at(cstr!("zygisk/unloaded"), 0).ok();
+            }
+        } else {
+            // Ignore zygisk modules when zygisk is not enabled
+            if is_zygisk {
+                info!("{name}: ignore");
+                return Ok(());
+            }
+        }
+        modules.push(ModuleInfo {
+            name: name.to_string(),
+            z32,
+            z64,
+        });
+        Ok(())
+    })
+    .log_ok();
+
+    if zygisk_enabled && open_zygisk {
+        let mut use_memfd = true;
+        let mut convert_to_memfd = |fd: i32| -> i32 {
+            if fd < 0 {
+                return fd;
+            }
+            if use_memfd {
+                let memfd = unsafe {
+                    libc::syscall(
+                        libc::SYS_memfd_create,
+                        raw_cstr!("jit-cache"),
+                        libc::MFD_CLOEXEC,
+                    ) as i32
+                };
+                if memfd >= 0 {
+                    unsafe {
+                        if libc::sendfile(memfd, fd, ptr::null_mut(), i32::MAX as usize) < 0 {
+                            libc::close(memfd);
+                        } else {
+                            libc::close(fd);
+                            return memfd;
+                        }
                     }
                 }
+                // Some error occurred, don't try again
+                use_memfd = false;
             }
-        }
-        roots.insert("system", system);
+            fd
+        };
 
-        for (dir, mut root) in roots {
-            // Step 4: Convert virtual filesystem tree into concrete operations
-            //
-            // Compare the virtual filesystem tree we constructed against the real filesystem
-            // structure on-device to generate a series of "operations".
-            // The "core" of the logic is to decide which directories need to be rebuilt in the
-            // tmpfs worker directory, and real sub-nodes need to be mirrored inside it.
+        modules.iter_mut().for_each(|m| {
+            m.z32 = convert_to_memfd(m.z32);
+            m.z64 = convert_to_memfd(m.z64);
+        });
+    }
 
-            let path = root_paths.append(dir);
-            root.commit(path, true).log_ok();
+    modules
+}
+
+impl MagiskD {
+    pub fn handle_modules(&self) {
+        setup_module_mount();
+        upgrade_modules().ok();
+
+        let zygisk = self.zygisk_enabled.load(Ordering::Acquire);
+        let modules = collect_modules(zygisk, false);
+        exec_module_scripts(cstr!("post-fs-data"), &modules);
+
+        // Recollect modules (module scripts could remove itself)
+        let modules = collect_modules(zygisk, true);
+        if zygisk {
+            set_zygisk_prop();
         }
+        apply_modules(zygisk, &modules);
+
+        self.module_list.set(modules).ok();
     }
 }
