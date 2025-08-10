@@ -125,15 +125,6 @@ pub mod ffi {
         gids: Vec<u32>,
     }
 
-    struct SuAppRequest<'a> {
-        uid: i32,
-        pid: i32,
-        eval_uid: i32,
-        mgr_pkg: &'a str,
-        mgr_uid: i32,
-        request: &'a SuRequest,
-    }
-
     unsafe extern "C++" {
         #[namespace = "rust"]
         #[cxx_name = "Utf8CStr"]
@@ -161,9 +152,6 @@ pub mod ffi {
         fn set_zygisk_prop();
         fn restore_zygisk_prop();
         fn switch_mnt_ns(pid: i32) -> i32;
-        fn app_request(req: &SuAppRequest) -> i32;
-        fn app_notify(req: &SuAppRequest, policy: SuPolicy);
-        fn app_log(req: &SuAppRequest, policy: SuPolicy, notify: bool);
         fn exec_root_shell(client: i32, pid: i32, req: &mut SuRequest, mode: MntNsMode);
 
         include!("include/sqlite.hpp");
@@ -211,7 +199,7 @@ pub mod ffi {
         fn send_fds(socket: i32, fds: &[i32]) -> bool;
         fn recv_fd(socket: i32) -> i32;
         fn recv_fds(socket: i32) -> Vec<i32>;
-        unsafe fn write_to_fd(self: &SuRequest, fd: i32);
+        fn write_to_fd(self: &SuRequest, fd: i32);
         fn pump_tty(infd: i32, outfd: i32);
         fn get_pty_num(fd: i32) -> i32;
         fn restore_stdin() -> bool;
@@ -266,7 +254,7 @@ unsafe impl ExternType for UCred {
 }
 
 impl SuRequest {
-    unsafe fn write_to_fd(&self, fd: i32) {
+    fn write_to_fd(&self, fd: i32) {
         unsafe {
             let mut w = ManuallyDrop::new(File::from_raw_fd(fd));
             self.encode(w.deref_mut()).ok();
