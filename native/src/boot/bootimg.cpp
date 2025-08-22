@@ -48,6 +48,43 @@ static bool check_env(const char *name) {
     return val != nullptr && val == "true"sv;
 }
 
+FileFormat check_fmt(const void *buf, size_t len) {
+    if (CHECKED_MATCH(CHROMEOS_MAGIC)) {
+        return FileFormat::CHROMEOS;
+    } else if (CHECKED_MATCH(BOOT_MAGIC)) {
+        return FileFormat::AOSP;
+    } else if (CHECKED_MATCH(VENDOR_BOOT_MAGIC)) {
+        return FileFormat::AOSP_VENDOR;
+    } else if (CHECKED_MATCH(GZIP1_MAGIC) || CHECKED_MATCH(GZIP2_MAGIC)) {
+        return FileFormat::GZIP;
+    } else if (CHECKED_MATCH(LZOP_MAGIC)) {
+        return FileFormat::LZOP;
+    } else if (CHECKED_MATCH(XZ_MAGIC)) {
+        return FileFormat::XZ;
+    } else if (len >= 13 && memcmp(buf, "\x5d\x00\x00", 3) == 0
+            && (((char *)buf)[12] == '\xff' || ((char *)buf)[12] == '\x00')) {
+        return FileFormat::LZMA;
+    } else if (CHECKED_MATCH(BZIP_MAGIC)) {
+        return FileFormat::BZIP2;
+    } else if (CHECKED_MATCH(LZ41_MAGIC) || CHECKED_MATCH(LZ42_MAGIC)) {
+        return FileFormat::LZ4;
+    } else if (CHECKED_MATCH(LZ4_LEG_MAGIC)) {
+        return FileFormat::LZ4_LEGACY;
+    } else if (CHECKED_MATCH(MTK_MAGIC)) {
+        return FileFormat::MTK;
+    } else if (CHECKED_MATCH(DTB_MAGIC)) {
+        return FileFormat::DTB;
+    } else if (CHECKED_MATCH(DHTB_MAGIC)) {
+        return FileFormat::DHTB;
+    } else if (CHECKED_MATCH(TEGRABLOB_MAGIC)) {
+        return FileFormat::BLOB;
+    } else if (len >= 0x28 && memcmp(&((char *)buf)[0x24], ZIMAGE_MAGIC, 4) == 0) {
+        return FileFormat::ZIMAGE;
+    } else {
+        return FileFormat::UNKNOWN;
+    }
+}
+
 void dyn_img_hdr::print() const {
     uint32_t ver = header_version();
     fprintf(stderr, "%-*s [%u]\n", PADDING, "HEADER_VER", ver);
@@ -472,7 +509,7 @@ bool boot_img::parse_image(const uint8_t *p, FileFormat type) {
                 fprintf(stderr, "! Could not find zImage piggy, keeping raw kernel\n");
             }
         }
-        fprintf(stderr, "%-*s [%s]\n", PADDING, "KERNEL_FMT", fmt2name[k_fmt]);
+        fprintf(stderr, "%-*s [%s]\n", PADDING, "KERNEL_FMT", fmt2name(k_fmt));
     }
     if (auto size = hdr->ramdisk_size()) {
         if (hdr->vendor_ramdisk_table_size()) {
@@ -493,7 +530,7 @@ bool boot_img::parse_image(const uint8_t *p, FileFormat type) {
                 fprintf(stderr,
                         "%-*s name=[%s] type=[%s] size=[%u] fmt=[%s]\n", PADDING, "VND_RAMDISK",
                         it.ramdisk_name, vendor_ramdisk_type(it.ramdisk_type),
-                        it.ramdisk_size, fmt2name[fmt]);
+                        it.ramdisk_size, fmt2name(fmt));
             }
         } else {
             r_fmt = check_fmt_lg(ramdisk, size);
@@ -507,12 +544,12 @@ bool boot_img::parse_image(const uint8_t *p, FileFormat type) {
                 hdr->ramdisk_size() -= sizeof(mtk_hdr);
                 r_fmt = check_fmt_lg(ramdisk, hdr->ramdisk_size());
             }
-            fprintf(stderr, "%-*s [%s]\n", PADDING, "RAMDISK_FMT", fmt2name[r_fmt]);
+            fprintf(stderr, "%-*s [%s]\n", PADDING, "RAMDISK_FMT", fmt2name(r_fmt));
         }
     }
     if (auto size = hdr->extra_size()) {
         e_fmt = check_fmt_lg(extra, size);
-        fprintf(stderr, "%-*s [%s]\n", PADDING, "EXTRA_FMT", fmt2name[e_fmt]);
+        fprintf(stderr, "%-*s [%s]\n", PADDING, "EXTRA_FMT", fmt2name(e_fmt));
     }
 
     if (tail.sz()) {
@@ -523,8 +560,7 @@ bool boot_img::parse_image(const uint8_t *p, FileFormat type) {
         } else if (tail.sz() >= 16 && BUFFER_MATCH(tail.buf(), LG_BUMP_MAGIC)) {
             fprintf(stderr, "LG_BUMP_IMAGE\n");
             flags[LG_BUMP_FLAG] = true;
-        } else if (!(tail.sz() >= 4 && BUFFER_MATCH(tail.buf(), AVB_MAGIC)) && verify()) {
-            // Check if the image is avb 1.0 signed
+        } else if (verify()) {
             fprintf(stderr, "AVB1_SIGNED\n");
             flags[AVB1_SIGNED_FLAG] = true;
         }
@@ -532,13 +568,13 @@ bool boot_img::parse_image(const uint8_t *p, FileFormat type) {
         // Find AVB footer
         const void *footer = tail.buf() + tail.sz() - sizeof(AvbFooter);
         if (BUFFER_MATCH(footer, AVB_FOOTER_MAGIC)) {
-            avb_footer = reinterpret_cast<const AvbFooter*>(footer);
+            avb_footer = static_cast<const AvbFooter*>(footer);
             // Double check if meta header exists
             const void *meta = base_addr + __builtin_bswap64(avb_footer->vbmeta_offset);
             if (BUFFER_MATCH(meta, AVB_MAGIC)) {
                 fprintf(stderr, "VBMETA\n");
                 flags[AVB_FLAG] = true;
-                vbmeta = reinterpret_cast<const AvbVBMetaImageHeader*>(meta);
+                vbmeta = static_cast<const AvbVBMetaImageHeader*>(meta);
             }
         }
     }
@@ -547,16 +583,12 @@ bool boot_img::parse_image(const uint8_t *p, FileFormat type) {
     return true;
 }
 
-bool boot_img::verify(const char *cert) const {
-    return rust::verify_boot_image(*this, cert);
-}
-
-int split_image_dtb(const char *filename, bool skip_decomp) {
-    mmap_data img(filename);
+int split_image_dtb(rust::Utf8CStr filename, bool skip_decomp) {
+    mmap_data img(filename.data());
 
     if (size_t off = find_dtb_offset(img.buf(), img.sz()); off > 0) {
         FileFormat fmt = check_fmt_lg(img.buf(), img.sz());
-        if (!skip_decomp && COMPRESSED(fmt)) {
+        if (!skip_decomp && fmt_compressed(fmt)) {
             int fd = creat(KERNEL_FILE, 0644);
             decompress(fmt, fd, img.buf(), off);
             close(fd);
@@ -566,19 +598,19 @@ int split_image_dtb(const char *filename, bool skip_decomp) {
         dump(img.buf() + off, img.sz() - off, KER_DTB_FILE);
         return 0;
     } else {
-        fprintf(stderr, "Cannot find DTB in %s\n", filename);
+        fprintf(stderr, "Cannot find DTB in %s\n", filename.data());
         return 1;
     }
 }
 
-int unpack(const char *image, bool skip_decomp, bool hdr) {
-    const boot_img boot(image);
+int unpack(rust::Utf8CStr image, bool skip_decomp, bool hdr) {
+    const boot_img boot(image.data());
 
     if (hdr)
         boot.hdr->dump_hdr_file();
 
     // Dump kernel
-    if (!skip_decomp && COMPRESSED(boot.k_fmt)) {
+    if (!skip_decomp && fmt_compressed(boot.k_fmt)) {
         if (boot.hdr->kernel_size() != 0) {
             int fd = creat(KERNEL_FILE, 0644);
             decompress(boot.k_fmt, fd, boot.kernel, boot.hdr->kernel_size());
@@ -609,13 +641,13 @@ int unpack(const char *image, bool skip_decomp, bool hdr) {
             }
             owned_fd fd = xopenat(dirfd, file_name, O_CREAT | O_TRUNC | O_WRONLY | O_CLOEXEC, 0644);
             FileFormat fmt = check_fmt_lg(boot.ramdisk + it.ramdisk_offset, it.ramdisk_size);
-            if (!skip_decomp && COMPRESSED(fmt)) {
+            if (!skip_decomp && fmt_compressed(fmt)) {
                 decompress(fmt, fd, boot.ramdisk + it.ramdisk_offset, it.ramdisk_size);
             } else {
                 xwrite(fd, boot.ramdisk + it.ramdisk_offset, it.ramdisk_size);
             }
         }
-    } else if (!skip_decomp && COMPRESSED(boot.r_fmt)) {
+    } else if (!skip_decomp && fmt_compressed(boot.r_fmt)) {
         if (boot.hdr->ramdisk_size() != 0) {
             int fd = creat(RAMDISK_FILE, 0644);
             decompress(boot.r_fmt, fd, boot.ramdisk, boot.hdr->ramdisk_size());
@@ -629,7 +661,7 @@ int unpack(const char *image, bool skip_decomp, bool hdr) {
     dump(boot.second, boot.hdr->second_size(), SECOND_FILE);
 
     // Dump extra
-    if (!skip_decomp && COMPRESSED(boot.e_fmt)) {
+    if (!skip_decomp && fmt_compressed(boot.e_fmt)) {
         if (boot.hdr->extra_size() != 0) {
             int fd = creat(EXTRA_FILE, 0644);
             decompress(boot.e_fmt, fd, boot.extra, boot.hdr->extra_size());
@@ -656,9 +688,9 @@ write_zero(fd, align_padding(lseek(fd, 0, SEEK_CUR) - off.header, page_size))
 
 #define file_align() file_align_with(boot.hdr->page_size())
 
-void repack(const char *src_img, const char *out_img, bool skip_comp) {
-    const boot_img boot(src_img);
-    fprintf(stderr, "Repack to boot image: [%s]\n", out_img);
+void repack(rust::Utf8CStr src_img, rust::Utf8CStr out_img, bool skip_comp) {
+    const boot_img boot(src_img.data());
+    fprintf(stderr, "Repack to boot image: [%s]\n", out_img.data());
 
     struct {
         uint32_t header;
@@ -687,7 +719,7 @@ void repack(const char *src_img, const char *out_img, bool skip_comp) {
      ***************/
 
     // Create new image
-    int fd = creat(out_img, 0644);
+    int fd = creat(out_img.data(), 0644);
 
     if (boot.flags[DHTB_FLAG]) {
         // Skip DHTB header
@@ -716,7 +748,7 @@ void repack(const char *src_img, const char *out_img, bool skip_comp) {
     }
     if (access(KERNEL_FILE, R_OK) == 0) {
         mmap_data m(KERNEL_FILE);
-        if (!skip_comp && !COMPRESSED_ANY(check_fmt(m.buf(), m.sz())) && COMPRESSED(boot.k_fmt)) {
+        if (!skip_comp && !fmt_compressed_any(check_fmt(m.buf(), m.sz())) && fmt_compressed(boot.k_fmt)) {
             // Always use zopfli for zImage compression
             auto fmt = (boot.flags[ZIMAGE_KERNEL] && boot.k_fmt == FileFormat::GZIP) ? FileFormat::ZOPFLI : boot.k_fmt;
             hdr->kernel_size() = compress_len(fmt, m, fd);
@@ -784,7 +816,7 @@ void repack(const char *src_img, const char *out_img, bool skip_comp) {
             mmap_data m(dirfd, file_name);
             FileFormat fmt = check_fmt_lg(boot.ramdisk + it.ramdisk_offset, it.ramdisk_size);
             it.ramdisk_offset = ramdisk_offset;
-            if (!skip_comp && !COMPRESSED_ANY(check_fmt(m.buf(), m.sz())) && COMPRESSED(fmt)) {
+            if (!skip_comp && !fmt_compressed_any(check_fmt(m.buf(), m.sz())) && fmt_compressed(fmt)) {
                 it.ramdisk_size = compress_len(fmt, m, fd);
             } else {
                 it.ramdisk_size = xwrite(fd, m.buf(), m.sz());
@@ -801,10 +833,10 @@ void repack(const char *src_img, const char *out_img, bool skip_comp) {
             // A v4 boot image ramdisk will have to be merged with other vendor ramdisks,
             // and they have to use the exact same compression method. v4 GKIs are required to
             // use lz4 (legacy), so hardcode the format here.
-            fprintf(stderr, "RAMDISK_FMT: [%s] -> [%s]\n", fmt2name[r_fmt], fmt2name[FileFormat::LZ4_LEGACY]);
+            fprintf(stderr, "RAMDISK_FMT: [%s] -> [%s]\n", fmt2name(r_fmt), fmt2name(FileFormat::LZ4_LEGACY));
             r_fmt = FileFormat::LZ4_LEGACY;
         }
-        if (!skip_comp && !COMPRESSED_ANY(check_fmt(m.buf(), m.sz())) && COMPRESSED(r_fmt)) {
+        if (!skip_comp && !fmt_compressed_any(check_fmt(m.buf(), m.sz())) && fmt_compressed(r_fmt)) {
             hdr->ramdisk_size() = compress_len(r_fmt, m, fd);
         } else {
             hdr->ramdisk_size() = xwrite(fd, m.buf(), m.sz());
@@ -823,7 +855,7 @@ void repack(const char *src_img, const char *out_img, bool skip_comp) {
     off.extra = lseek(fd, 0, SEEK_CUR);
     if (access(EXTRA_FILE, R_OK) == 0) {
         mmap_data m(EXTRA_FILE);
-        if (!skip_comp && !COMPRESSED_ANY(check_fmt(m.buf(), m.sz())) && COMPRESSED(boot.e_fmt)) {
+        if (!skip_comp && !fmt_compressed_any(check_fmt(m.buf(), m.sz())) && fmt_compressed(boot.e_fmt)) {
             hdr->extra_size() = compress_len(boot.e_fmt, m, fd);
         } else {
             hdr->extra_size() = xwrite(fd, m.buf(), m.sz());
@@ -899,7 +931,7 @@ void repack(const char *src_img, const char *out_img, bool skip_comp) {
      ******************/
 
     // Map output image as rw
-    mmap_data out(out_img, true);
+    mmap_data out(out_img.data(), true);
 
     // MTK headers
     if (boot.flags[MTK_KERNEL]) {
@@ -987,7 +1019,7 @@ void repack(const char *src_img, const char *out_img, bool skip_comp) {
     // Sign the image after we finish patching the boot image
     if (boot.flags[AVB1_SIGNED_FLAG]) {
         byte_view payload(out.buf() + off.header, off.total - off.header);
-        auto sig = rust::sign_boot_image(payload, "/boot", nullptr, nullptr);
+        auto sig = sign_payload(payload);
         if (!sig.empty()) {
             lseek(fd, off.total, SEEK_SET);
             xwrite(fd, sig.data(), sig.size());
@@ -997,33 +1029,15 @@ void repack(const char *src_img, const char *out_img, bool skip_comp) {
     close(fd);
 }
 
-int verify(const char *image, const char *cert) {
-    const boot_img boot(image);
-    if (cert == nullptr) {
-        // Boot image parsing already checks if the image is signed
-        return boot.flags[AVB1_SIGNED_FLAG] ? 0 : 1;
-    } else {
-        // Provide a custom certificate and re-verify
-        return boot.verify(cert) ? 0 : 1;
-    }
-}
-
-int sign(const char *image, const char *name, const char *cert, const char *key) {
-    const boot_img boot(image);
-    auto sig = rust::sign_boot_image(boot.payload, name, cert, key);
-    if (sig.empty())
-        return 1;
-
-    auto eof = boot.tail.buf() - boot.map.buf();
-    int fd = xopen(image, O_WRONLY | O_CLOEXEC);
-    if (lseek(fd, eof, SEEK_SET) != eof || xwrite(fd, sig.data(), sig.size()) != sig.size()) {
-        close(fd);
-        return 1;
-    }
-    if (auto off = lseek(fd, 0, SEEK_CUR); off < boot.map.sz()) {
-        // Wipe out rest of tail
-        write_zero(fd, boot.map.sz() - off);
-    }
-    close(fd);
-    return 0;
+void cleanup() {
+    unlink(HEADER_FILE);
+    unlink(KERNEL_FILE);
+    unlink(RAMDISK_FILE);
+    unlink(SECOND_FILE);
+    unlink(KER_DTB_FILE);
+    unlink(EXTRA_FILE);
+    unlink(RECV_DTBO_FILE);
+    unlink(DTB_FILE);
+    unlink(BOOTCONFIG_FILE);
+    rm_rf(VND_RAMDISK_DIR);
 }

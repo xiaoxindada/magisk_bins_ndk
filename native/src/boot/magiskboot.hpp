@@ -12,8 +12,7 @@
 #define BOOTCONFIG_FILE "bootconfig"
 #define NEW_BOOT        "new-boot.img"
 
-int unpack(const char *image, bool skip_decomp = false, bool hdr = false);
-void repack(const char *src_img, const char *out_img, bool skip_comp = false);
-int verify(const char *image, const char *cert);
-int sign(const char *image, const char *name, const char *cert, const char *key);
-int split_image_dtb(const char *filename, bool skip_decomp = false);
+int unpack(rust::Utf8CStr image, bool skip_decomp = false, bool hdr = false);
+void repack(rust::Utf8CStr src_img, rust::Utf8CStr out_img, bool skip_comp = false);
+int split_image_dtb(rust::Utf8CStr filename, bool skip_decomp = false);
+void cleanup();
