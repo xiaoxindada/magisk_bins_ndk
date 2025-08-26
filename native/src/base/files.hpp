@@ -1,24 +1,12 @@
 #pragma once
 
 #include <sys/stat.h>
+#include <linux/fs.h>
 #include <functional>
 #include <string_view>
 #include <string>
-#include <vector>
 
-#include <linux/fs.h>
-#include "misc.hpp"
-
-template <typename T>
-static inline T align_to(T v, int a) {
-    static_assert(std::is_integral<T>::value);
-    return (v + a - 1) / a * a;
-}
-
-template <typename T>
-static inline T align_padding(T v, int a) {
-    return align_to(v, a) - v;
-}
+#include "base-rs.hpp"
 
 struct mmap_data : public byte_data {
     static_assert((sizeof(void *) == 8 && BLKGETSIZE64 == 0x80081272) ||
@@ -45,23 +33,29 @@ bool fclone_attr(int src, int dest);
 
 } // extern "C"
 
-int fd_pathat(int dirfd, const char *name, char *path, size_t size);
-static inline ssize_t realpath(
-        const char * __restrict__ path, char * __restrict__ buf, size_t bufsiz) {
-    return canonical_path(path, buf, bufsiz);
-}
-void full_read(int fd, std::string &str);
-void full_read(const char *filename, std::string &str);
 std::string full_read(int fd);
 std::string full_read(const char *filename);
 void write_zero(int fd, size_t size);
-void file_readline(bool trim, FILE *fp, const std::function<bool(std::string_view)> &fn);
-void file_readline(bool trim, const char *file, const std::function<bool(std::string_view)> &fn);
-void file_readline(const char *file, const std::function<bool(std::string_view)> &fn);
-void parse_prop_file(FILE *fp, const std::function<bool(std::string_view, std::string_view)> &fn);
-void parse_prop_file(const char *file,
-        const std::function<bool(std::string_view, std::string_view)> &fn);
 std::string resolve_preinit_dir(const char *base_dir);
+
+// Functor = function<bool(string_view)>
+template <typename Functor>
+void file_readline(int fd, Functor &&fn) {
+    file_readline_rs(fd, [&](rust::String &line) -> bool {
+        return fn(std::string_view(line.c_str(), line.size()));
+    });
+}
+
+// Functor = function<bool(string_view, string_view)>
+template <typename Functor>
+void parse_prop_file(const char *file, Functor &&fn) {
+    parse_prop_file_rs(file, [&](rust::Str key, rust::Str val) -> bool {
+        // Null terminate all strings
+        *(const_cast<char *>(key.data()) + key.size()) = '\0';
+        *(const_cast<char *>(val.data()) + val.size()) = '\0';
+        return fn(std::string_view(key.data(), key.size()), std::string_view(val.data(), val.size()));
+    });
+}
 
 using sFILE = std::unique_ptr<FILE, decltype(&fclose)>;
 using sDIR = std::unique_ptr<DIR, decltype(&closedir)>;

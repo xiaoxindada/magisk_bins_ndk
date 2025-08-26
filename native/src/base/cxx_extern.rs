@@ -1,23 +1,21 @@
 // Functions in this file are only for exporting to C++, DO NOT USE IN RUST
 
-use std::os::fd::{BorrowedFd, OwnedFd, RawFd};
+use std::fs::File;
+use std::io::BufReader;
+use std::mem::ManuallyDrop;
+use std::ops::DerefMut;
+use std::os::fd::{BorrowedFd, FromRawFd, OwnedFd, RawFd};
 
 use cfg_if::cfg_if;
-use libc::{c_char, mode_t};
+use libc::{O_RDONLY, c_char, mode_t};
 
+use crate::ffi::{FnBoolStrStr, FnBoolString};
 use crate::files::map_file_at;
 pub(crate) use crate::xwrap::*;
 use crate::{
-    CxxResultExt, Directory, OsResultStatic, Utf8CStr, clone_attr, cstr, fclone_attr, fd_path,
+    BufReadExt, CxxResultExt, Directory, OsResultStatic, Utf8CStr, clone_attr, cstr, fclone_attr,
     map_fd, map_file, slice_from_ptr,
 };
-
-pub(crate) fn fd_path_for_cxx(fd: RawFd, buf: &mut [u8]) -> isize {
-    let mut buf = cstr::buf::wrap(buf);
-    fd_path(fd, &mut buf)
-        .log_cxx()
-        .map_or(-1_isize, |_| buf.len() as isize)
-}
 
 #[unsafe(no_mangle)]
 unsafe extern "C" fn canonical_path(path: *const c_char, buf: *mut u8, bufsz: usize) -> isize {
@@ -177,4 +175,15 @@ unsafe extern "C" fn str_ptr(this: &&Utf8CStr) -> *const u8 {
 #[unsafe(export_name = "cxx$utf8str$len")]
 unsafe extern "C" fn str_len(this: &&Utf8CStr) -> usize {
     this.len()
+}
+
+pub(crate) fn parse_prop_file_rs(name: &Utf8CStr, f: &FnBoolStrStr) {
+    if let Ok(file) = name.open(O_RDONLY) {
+        BufReader::new(file).for_each_prop(|key, value| f.call(key, value))
+    }
+}
+
+pub(crate) fn file_readline_rs(fd: RawFd, f: &FnBoolString) {
+    let mut fd = ManuallyDrop::new(unsafe { File::from_raw_fd(fd) });
+    BufReader::new(fd.deref_mut()).for_each_line(|line| f.call(line));
 }

@@ -47,6 +47,12 @@ pub mod ffi {
 
         fn mut_u8_patch(buf: &mut [u8], from: &[u8], to: &[u8]) -> Vec<usize>;
         fn fork_dont_care() -> i32;
+
+        type FnBoolStrStr;
+        fn call(self: &FnBoolStrStr, key: &str, value: &str) -> bool;
+
+        type FnBoolString;
+        fn call(self: &FnBoolString, key: &mut String) -> bool;
     }
 
     extern "Rust" {
@@ -56,13 +62,13 @@ pub mod ffi {
         fn set_log_level_state_cxx(level: LogLevelCxx, enabled: bool);
         fn exit_on_error(b: bool);
         fn cmdline_logging();
+        fn parse_prop_file_rs(name: Utf8CStrRef, f: &FnBoolStrStr);
+        fn file_readline_rs(fd: i32, f: &FnBoolString);
     }
 
     #[namespace = "rust"]
     extern "Rust" {
         fn xpipe2(fds: &mut [i32; 2], flags: i32) -> i32;
-        #[cxx_name = "fd_path"]
-        fn fd_path_for_cxx(fd: i32, buf: &mut [u8]) -> isize;
         #[cxx_name = "map_file"]
         fn map_file_for_cxx(path: Utf8CStrRef, rw: bool) -> &'static mut [u8];
         #[cxx_name = "map_file_at"]
