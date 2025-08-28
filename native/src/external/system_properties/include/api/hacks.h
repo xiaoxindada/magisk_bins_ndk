@@ -14,9 +14,9 @@
 #define async_safe_format_log(...)  /* NOP */
 
 // Rename symbols
-#pragma redefine_extname __system_property_set _system_property_set2
-#pragma redefine_extname __system_property_find _system_property_find2
-#pragma redefine_extname __system_property_read_callback _system_property_read_callback2
+#pragma redefine_extname __system_property_set __system_property_set2
+#pragma redefine_extname __system_property_find __system_property_find2
+#pragma redefine_extname __system_property_read_callback __system_property_read_callback2
 #pragma redefine_extname __system_property_foreach __system_property_foreach2
 #pragma redefine_extname __system_property_wait __system_property_wait2
 #pragma redefine_extname __system_property_read __system_property_read2
