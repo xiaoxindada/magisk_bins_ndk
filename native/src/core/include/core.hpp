@@ -17,6 +17,11 @@
 #define to_app_id(uid)  (uid % AID_USER_OFFSET)
 #define to_user_id(uid) (uid / AID_USER_OFFSET)
 
+// Multi-call entrypoints
+int magisk_main(int argc, char *argv[]);
+int su_client_main(int argc, char *argv[]);
+int zygisk_main(int argc, char *argv[]);
+
 // Return codes for daemon
 enum class RespondCode : int {
     ERROR = -1,
@@ -88,10 +93,10 @@ void exec_task(std::function<void()> &&task);
 void denylist_handler(int client, const sock_cred *cred);
 
 // Scripting
-void install_apk(rust::Utf8CStr apk);
-void uninstall_pkg(rust::Utf8CStr pkg);
-void exec_common_scripts(rust::Utf8CStr stage);
-void exec_module_scripts(rust::Utf8CStr stage, const rust::Vec<ModuleInfo> &module_list);
+void install_apk(Utf8CStr apk);
+void uninstall_pkg(Utf8CStr pkg);
+void exec_common_scripts(Utf8CStr stage);
+void exec_module_scripts(Utf8CStr stage, const rust::Vec<ModuleInfo> &module_list);
 void exec_script(const char *script);
 void clear_pkg(const char *pkg, int user_id);
 [[noreturn]] void install_module(const char *file);
@@ -109,8 +114,8 @@ void update_deny_flags(int uid, rust::Str process, uint32_t &flags);
 void exec_root_shell(int client, int pid, SuRequest &req, MntNsMode mode);
 
 // Rust bindings
-static inline rust::Utf8CStr get_magisk_tmp_rs() { return get_magisk_tmp(); }
-static inline rust::String resolve_preinit_dir_rs(rust::Utf8CStr base_dir) {
+static inline Utf8CStr get_magisk_tmp_rs() { return get_magisk_tmp(); }
+static inline rust::String resolve_preinit_dir_rs(Utf8CStr base_dir) {
     return resolve_preinit_dir(base_dir.c_str());
 }
-static inline void exec_script_rs(rust::Utf8CStr script) { exec_script(script.data()); }
+static inline void exec_script_rs(Utf8CStr script) { exec_script(script.data()); }
