@@ -17,12 +17,14 @@ jobs:
     name: ${{matrix.name || format('Rust {0}', matrix.rust)}}
     needs: pre_ci
     if: needs.pre_ci.outputs.continue
-    runs-on: ${{matrix.os}}-latest
+    runs-on: ${{matrix.runs-on || format('{0}-latest', matrix.os)}}
     strategy:
       fail-fast: false
       matrix:
-        rust: [nightly, beta, stable, 1.82.0, 1.74.0, 1.73.0]
+        rust: [nightly, beta, stable, 1.82.0, 1.81.0, 1.80.0, 1.77.0, 1.73.0]
         os: [ubuntu]
+        cc: [g++]
+        flags: ['']
         include:
           - name: Cargo on macOS
             rust: nightly
@@ -30,16 +32,66 @@ jobs:
           - name: Cargo on Windows (msvc)
             rust: nightly-x86_64-pc-windows-msvc
             os: windows
-            flags: /EHsc
+          - name: Clang
+            rust: nightly
+            os: ubuntu
+            cc: clang++
+            flags: -std=c++20
+          - name: Clang (no exceptions)
+            rust: nightly
+            os: ubuntu
+            cc: clang++
+            flags: -std=c++20 -fno-exceptions
+          - name: C++14 on Linux
+            rust: nightly
+            os: ubuntu
+            cc: g++
+            flags: -std=c++14
+          - name: C++14 on macOS
+            rust: nightly
+            os: macos
+            flags: -std=c++14
+          - name: C++14 on Windows
+            rust: nightly-x86_64-pc-windows-msvc
+            os: windows
+            flags: /std:c++14
+          - name: C++17 on Linux
+            rust: nightly
+            os: ubuntu
+            cc: g++
+            flags: -std=c++17
+          - name: C++17 on macOS
+            rust: nightly
+            os: macos
+            flags: -std=c++17
+          - name: C++17 on Windows
+            rust: nightly-x86_64-pc-windows-msvc
+            os: windows
+            flags: /std:c++17
+          - name: C++20 on Linux
+            rust: nightly
+            os: ubuntu
+            cc: g++
+            flags: -std=c++20
+          - name: C++20 on macOS
+            rust: nightly
+            os: macos
+            flags: -std=c++20
+            runs-on: macos-15
+          - name: C++20 on Windows
+            rust: nightly-x86_64-pc-windows-msvc
+            os: windows
+            flags: /std:c++20
     env:
-      CXXFLAGS: ${{matrix.flags}}
+      CXX: ${{matrix.cc}}
+      CXXFLAGS: ${{matrix.flags}} ${{matrix.os == 'windows' && '/EHsc /WX' || '-Werror -Wall'}}
       RUSTFLAGS: --cfg deny_warnings -Dwarnings
     timeout-minutes: 45
     steps:
       - name: Enable symlinks (windows)
         if: matrix.os == 'windows'
         run: git config --global core.symlinks true
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{matrix.rust}}
@@ -63,6 +115,7 @@ jobs:
         if: matrix.os == 'macos'
       - run: cargo run --manifest-path demo/Cargo.toml
       - run: cargo test --workspace ${{steps.testsuite.outputs.exclude}}
+        if: matrix.rust != '1.73.0' && !contains(matrix.flags, '-fno-exceptions')
       - run: cargo check --no-default-features --features alloc
         env:
           RUSTFLAGS: --cfg compile_error_if_std ${{env.RUSTFLAGS}}
@@ -70,7 +123,7 @@ jobs:
         env:
           RUSTFLAGS: --cfg compile_error_if_alloc --cfg cxx_experimental_no_alloc ${{env.RUSTFLAGS}}
       - uses: actions/upload-artifact@v4
-        if: matrix.os == 'ubuntu' && matrix.rust == 'nightly' && always()
+        if: matrix.os == 'ubuntu' && matrix.rust == 'nightly' && matrix.cc == '' && matrix.flags == '' && always()
         with:
           name: Cargo.lock
           path: Cargo.lock
@@ -82,7 +135,7 @@ jobs:
     if: github.event_name != 'pull_request'
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rust-src
@@ -102,19 +155,20 @@ jobs:
         os: [ubuntu, macos, windows]
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install lld
         run: sudo apt-get install lld
         if: matrix.os == 'ubuntu'
+      - name: Set bazelrc for Windows
+        run: echo "startup --output_user_root=D:/bzl" > user.bazelrc
+        if: matrix.os == 'windows'
       - run: bazel --version
       - run: bazel run demo --verbose_failures --noshow_progress ${{matrix.os == 'macos' && '--xcode_version_config=tools/bazel:github_actions_xcodes' || ''}}
-        continue-on-error: ${{matrix.os == 'windows'}}  # https://github.com/bazelbuild/bazel/issues/18592
       - run: bazel test ... --verbose_failures --noshow_progress ${{matrix.os == 'macos' && '--xcode_version_config=tools/bazel:github_actions_xcodes' || ''}}
-        continue-on-error: ${{matrix.os == 'windows'}}  # https://github.com/bazelbuild/bazel/issues/18592
+      - run: bazel mod deps
       - name: Check MODULE.bazel.lock up to date
         run: git diff --exit-code
-        if: matrix.os == 'ubuntu' || matrix.os == 'macos'
-      - run: bazel run //third-party:vendor
+      - run: CARGO_BAZEL_REPIN=true bazel cquery '@crates.io//:*'
         if: matrix.os == 'ubuntu' || matrix.os == 'macos'
       - name: Check third-party/bazel up to date
         run: git diff --exit-code
@@ -127,7 +181,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@nightly
       - run: cargo generate-lockfile -Z minimal-versions
       - run: cargo check --locked --workspace
@@ -141,7 +195,7 @@ jobs:
     env:
       RUSTDOCFLAGS: -Dwarnings
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@nightly
         with:
           components: rust-src
@@ -160,7 +214,7 @@ jobs:
     env:
       RUSTFLAGS: -Dwarnings
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@nightly
         with:
           components: clippy, rust-src
@@ -173,11 +227,11 @@ jobs:
     if: github.event_name != 'pull_request'
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install clang-tidy
-        run: sudo apt-get install clang-tidy-18
+        run: sudo apt-get install clang-tidy-19
       - name: Run clang-tidy
-        run: clang-tidy-18 src/cxx.cc --warnings-as-errors=*
+        run: clang-tidy-19 src/cxx.cc --warnings-as-errors=*
 
   eslint:
     name: ESLint
@@ -185,7 +239,7 @@ jobs:
     if: github.event_name != 'pull_request'
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - run: npm install
         working-directory: book
       - run: npx eslint
@@ -197,7 +251,7 @@ jobs:
     if: github.event_name != 'pull_request'
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: dtolnay/install@cargo-outdated
       - run: cargo outdated --workspace --exit-code 1

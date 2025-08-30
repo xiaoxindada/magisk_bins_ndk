@@ -24,15 +24,14 @@ public:
   Slice(T *, size_t count) noexcept;
 
   template <typename C>
-  explicit Slice(C& c) : Slice(c.data(), c.size());
+  explicit Slice(C &c) : Slice(c.data(), c.size());
 
-  Slice &operator=(Slice<T> &&) noexcept;
-  Slice &operator=(const Slice<T> &) noexcept
+  Slice &operator=(Slice<T> &&) & noexcept;
+  Slice &operator=(const Slice<T> &) & noexcept
     requires std::is_const_v<T>;
 
   T *data() const noexcept;
   size_t size() const noexcept;
-  size_t length() const noexcept;
   bool empty() const noexcept;
 
   T &operator[](size_t n) const noexcept;
@@ -50,7 +49,11 @@ public:
 ...template <typename T>
 ...class Slice<T>::iterator final {
 ...public:
+...#if __cplusplus >= 202002L
+...  using iterator_category = std::contiguous_iterator_tag;
+...#else
 ...  using iterator_category = std::random_access_iterator_tag;
+...#endif
 ...  using value_type = T;
 ...  using pointer = T *;
 ...  using reference = T &;

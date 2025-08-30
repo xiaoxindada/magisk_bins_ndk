@@ -254,7 +254,6 @@
 //!         .std("c++11")
 //!         .compile("cxxbridge-demo");
 //!
-//!     println!("cargo:rerun-if-changed=src/main.rs");
 //!     println!("cargo:rerun-if-changed=src/demo.cc");
 //!     println!("cargo:rerun-if-changed=include/demo.h");
 //! }
@@ -364,7 +363,7 @@
 //! </table>
 
 #![no_std]
-#![doc(html_root_url = "https://docs.rs/cxx/1.0.137")]
+#![doc(html_root_url = "https://docs.rs/cxx/1.0.170")]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![deny(
     improper_ctypes,
@@ -381,6 +380,7 @@
 #![allow(
     clippy::cast_possible_truncation,
     clippy::doc_markdown,
+    clippy::elidable_lifetime_names,
     clippy::items_after_statements,
     clippy::len_without_is_empty,
     clippy::missing_errors_doc,
@@ -388,11 +388,14 @@
     clippy::must_use_candidate,
     clippy::needless_doctest_main,
     clippy::needless_lifetimes,
+    clippy::needless_pass_by_value,
     clippy::new_without_default,
     clippy::ptr_as_ptr,
     clippy::ptr_cast_constness,
+    clippy::ref_as_ptr,
     clippy::uninlined_format_args
 )]
+#![allow(unknown_lints, mismatched_lifetime_syntaxes)]
 
 #[cfg(built_with_cargo)]
 extern crate link_cplusplus;

@@ -5,6 +5,7 @@ use alloc::borrow::Cow;
 #[cfg(feature = "alloc")]
 use alloc::string::String;
 use core::cmp::Ordering;
+use core::ffi::{c_char, CStr};
 use core::fmt::{self, Debug, Display};
 use core::hash::{Hash, Hasher};
 use core::marker::{PhantomData, PhantomPinned};
@@ -129,10 +130,26 @@ impl CxxString {
     /// internal null bytes. As such, the returned pointer only makes sense as a
     /// string in combination with the length returned by [`len()`][len].
     ///
+    /// Modifying the string data through this pointer has undefined behavior.
+    ///
     /// [data]: https://en.cppreference.com/w/cpp/string/basic_string/data
     /// [len]: #method.len
     pub fn as_ptr(&self) -> *const u8 {
         unsafe { string_data(self) }
+    }
+
+    /// Produces a nul-terminated string view of this string's contents.
+    ///
+    /// Matches the behavior of C++ [std::string::c_str][c_str].
+    ///
+    /// If this string contains no internal '\0' bytes, then
+    /// `self.as_c_str().count_bytes() == self.len()`. But if it does, the CStr
+    /// only refers to the part of the string up to the first nul byte.
+    ///
+    /// [c_str]: https://en.cppreference.com/w/cpp/string/basic_string/c_str
+    pub fn as_c_str(&self) -> &CStr {
+        // Since C++11, string[string.size()] is guaranteed to be \0.
+        unsafe { CStr::from_ptr(self.as_ptr().cast::<c_char>()) }
     }
 
     /// Validates that the C++ string contains UTF-8 data and produces a view of
@@ -146,7 +163,7 @@ impl CxxString {
     /// sequences with the U+FFFD [replacement character] and returns a
     /// Cow::Owned String.
     ///
-    /// [replacement character]: https://doc.rust-lang.org/std/char/constant.REPLACEMENT_CHARACTER.html
+    /// [replacement character]: char::REPLACEMENT_CHARACTER
     #[cfg(feature = "alloc")]
     #[cfg_attr(docsrs, doc(cfg(feature = "alloc")))]
     pub fn to_string_lossy(&self) -> Cow<str> {
@@ -171,8 +188,8 @@ impl CxxString {
     /// Ensures that this string's capacity is at least `additional` bytes
     /// larger than its length.
     ///
-    /// The capacity may be increased by more than `additional` bytes if it
-    /// chooses, to amortize the cost of frequent reallocations.
+    /// The capacity may be increased by more than `additional` bytes if the
+    /// implementation chooses, to amortize the cost of frequent reallocations.
     ///
     /// **The meaning of the argument is not the same as
     /// [std::string::reserve][reserve] in C++.** The C++ standard library and

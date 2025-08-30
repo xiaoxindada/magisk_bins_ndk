@@ -3,11 +3,12 @@ use crate::syntax::cfg::CfgExpr;
 use crate::syntax::discriminant::DiscriminantSet;
 use crate::syntax::file::{Item, ItemForeignMod};
 use crate::syntax::report::Errors;
+use crate::syntax::repr::Repr;
 use crate::syntax::Atom::*;
 use crate::syntax::{
-    attrs, error, Api, Array, Derive, Doc, Enum, EnumRepr, ExternFn, ExternType, ForeignName, Impl,
-    Include, IncludeKind, Lang, Lifetimes, NamedType, Namespace, Pair, Ptr, Receiver, Ref,
-    Signature, SliceRef, Struct, Ty1, Type, TypeAlias, Var, Variant,
+    attrs, error, Api, Array, Derive, Doc, Enum, EnumRepr, ExternFn, ExternType, FnKind,
+    ForeignName, Impl, Include, IncludeKind, Lang, Lifetimes, NamedType, Namespace, Pair, Ptr,
+    Receiver, Ref, Signature, SliceRef, Struct, Ty1, Type, TypeAlias, Var, Variant,
 };
 use proc_macro2::{Delimiter, Group, Span, TokenStream, TokenTree};
 use quote::{format_ident, quote, quote_spanned};
@@ -59,6 +60,7 @@ fn parse_struct(cx: &mut Errors, mut item: ItemStruct, namespace: &Namespace) ->
     let mut cfg = CfgExpr::Unconditional;
     let mut doc = Doc::new();
     let mut derives = Vec::new();
+    let mut repr = None;
     let mut namespace = namespace.clone();
     let mut cxx_name = None;
     let mut rust_name = None;
@@ -69,12 +71,22 @@ fn parse_struct(cx: &mut Errors, mut item: ItemStruct, namespace: &Namespace) ->
             cfg: Some(&mut cfg),
             doc: Some(&mut doc),
             derives: Some(&mut derives),
+            repr: Some(&mut repr),
             namespace: Some(&mut namespace),
             cxx_name: Some(&mut cxx_name),
             rust_name: Some(&mut rust_name),
             ..Default::default()
         },
     );
+
+    let align = match repr {
+        Some(Repr::Align(align)) => Some(align),
+        Some(Repr::Atom(_atom, span)) => {
+            cx.push(Error::new(span, "unsupported alignment on a struct"));
+            None
+        }
+        None => None,
+    };
 
     let named_fields = match item.fields {
         Fields::Named(fields) => fields,
@@ -177,6 +189,7 @@ fn parse_struct(cx: &mut Errors, mut item: ItemStruct, namespace: &Namespace) ->
         cfg,
         doc,
         derives,
+        align,
         attrs,
         visibility,
         struct_token,
@@ -195,7 +208,6 @@ fn parse_enum(cx: &mut Errors, item: ItemEnum, namespace: &Namespace) -> Api {
     let mut namespace = namespace.clone();
     let mut cxx_name = None;
     let mut rust_name = None;
-    let mut variants_from_header = None;
     let attrs = attrs::parse(
         cx,
         item.attrs,
@@ -207,7 +219,6 @@ fn parse_enum(cx: &mut Errors, item: ItemEnum, namespace: &Namespace) -> Api {
             namespace: Some(&mut namespace),
             cxx_name: Some(&mut cxx_name),
             rust_name: Some(&mut rust_name),
-            variants_from_header: Some(&mut variants_from_header),
             ..Default::default()
         },
     );
@@ -222,6 +233,15 @@ fn parse_enum(cx: &mut Errors, item: ItemEnum, namespace: &Namespace) -> Api {
     } else if let Some(where_clause) = &item.generics.where_clause {
         cx.error(where_clause, "enum with where-clause is not supported");
     }
+
+    let repr = match repr {
+        Some(Repr::Atom(atom, _span)) => Some(atom),
+        Some(Repr::Align(align)) => {
+            cx.error(align, "C++ does not support custom alignment on an enum");
+            None
+        }
+        None => None,
+    };
 
     let mut variants = Vec::new();
     let mut discriminants = DiscriminantSet::new(repr);
@@ -250,7 +270,7 @@ fn parse_enum(cx: &mut Errors, item: ItemEnum, namespace: &Namespace) -> Api {
     let name = pair(namespace, &item.ident, cxx_name, rust_name);
     let repr_ident = Ident::new(repr.as_ref(), Span::call_site());
     let repr_type = Type::Ident(NamedType::new(repr_ident));
-    let repr = EnumRepr::Native {
+    let repr = EnumRepr {
         atom: repr,
         repr_type,
     };
@@ -259,8 +279,6 @@ fn parse_enum(cx: &mut Errors, item: ItemEnum, namespace: &Namespace) -> Api {
         lifetimes: Punctuated::new(),
         gt_token: None,
     };
-    let variants_from_header_attr = variants_from_header;
-    let variants_from_header = variants_from_header_attr.is_some();
 
     Api::Enum(Enum {
         cfg,
@@ -273,8 +291,6 @@ fn parse_enum(cx: &mut Errors, item: ItemEnum, namespace: &Namespace) -> Api {
         generics,
         brace_token,
         variants,
-        variants_from_header,
-        variants_from_header_attr,
         repr,
         explicit_repr,
     })
@@ -353,7 +369,7 @@ fn parse_foreign_mod(
                 cx.error(span, "extern \"Rust\" block does not need to be unsafe");
             }
         }
-        Lang::Cxx => {}
+        Lang::Cxx | Lang::CxxUnwind => {}
     }
 
     let trusted = trusted || foreign_mod.unsafety.is_some();
@@ -423,7 +439,7 @@ fn parse_foreign_mod(
         let single_type = single_type.clone();
         for item in &mut items {
             if let Api::CxxFunction(efn) | Api::RustFunction(efn) = item {
-                if let Some(receiver) = &mut efn.receiver {
+                if let Some(receiver) = efn.sig.receiver_mut() {
                     if receiver.ty.rust == "Self" {
                         receiver.ty.rust = single_type.rust.clone();
                     }
@@ -445,6 +461,7 @@ fn parse_lang(abi: &Abi) -> Result<Lang> {
 
     match name.value().as_str() {
         "C++" => Ok(Lang::Cxx),
+        "C++-unwind" => Ok(Lang::CxxUnwind),
         "Rust" => Ok(Lang::Rust),
         _ => Err(Error::new_spanned(
             abi,
@@ -492,7 +509,7 @@ fn parse_extern_type(
     let semi_token = foreign_type.semi_token;
 
     (match lang {
-        Lang::Cxx => Api::CxxType,
+        Lang::Cxx | Lang::CxxUnwind => Api::CxxType,
         Lang::Rust => Api::RustType,
     })(ExternType {
         cfg,
@@ -561,7 +578,7 @@ fn parse_extern_fn(
         ));
     }
 
-    if foreign_fn.sig.asyncness.is_some() && !cfg!(feature = "experimental-async-fn") {
+    if foreign_fn.sig.asyncness.is_some() {
         return Err(Error::new_spanned(
             foreign_fn,
             "async function is not directly supported yet, but see https://cxx.rs/async.html \
@@ -659,6 +676,17 @@ fn parse_extern_fn(
         }
     }
 
+    let kind = match (self_type, receiver) {
+        (None, None) => FnKind::Free,
+        (Some(self_type), None) => FnKind::Assoc(self_type),
+        (None, Some(receiver)) => FnKind::Method(receiver),
+        (Some(self_type), Some(receiver)) => {
+            let msg = "function with Self type must not have a `self` argument";
+            cx.error(self_type, msg);
+            FnKind::Method(receiver)
+        }
+    };
+
     let mut throws_tokens = None;
     let ret = parse_return_type(&foreign_fn.sig.output, &mut throws_tokens)?;
     let throws = throws_tokens.is_some();
@@ -673,7 +701,7 @@ fn parse_extern_fn(
     let semi_token = foreign_fn.semi_token;
 
     Ok(match lang {
-        Lang::Cxx => Api::CxxFunction,
+        Lang::Cxx | Lang::CxxUnwind => Api::CxxFunction,
         Lang::Rust => Api::RustFunction,
     }(ExternFn {
         cfg,
@@ -687,7 +715,7 @@ fn parse_extern_fn(
             unsafety,
             fn_token,
             generics,
-            receiver,
+            kind,
             args,
             ret,
             throws,
@@ -696,7 +724,6 @@ fn parse_extern_fn(
         },
         semi_token,
         trusted,
-        self_type,
     }))
 }
 
@@ -967,7 +994,7 @@ fn parse_extern_type_bounded(
     let name = pair(namespace, &ident, cxx_name, rust_name);
 
     Ok(match lang {
-        Lang::Cxx => Api::CxxType,
+        Lang::Cxx | Lang::CxxUnwind => Api::CxxType,
         Lang::Rust => Api::RustType,
     }(ExternType {
         cfg,
@@ -1419,7 +1446,7 @@ fn parse_type_fn(ty: &TypeBareFn) -> Result<Type> {
     let unsafety = ty.unsafety;
     let fn_token = ty.fn_token;
     let generics = Generics::default();
-    let receiver = None;
+    let kind = FnKind::Free;
     let paren_token = ty.paren_token;
 
     Ok(Type::Fn(Box::new(Signature {
@@ -1427,7 +1454,7 @@ fn parse_type_fn(ty: &TypeBareFn) -> Result<Type> {
         unsafety,
         fn_token,
         generics,
-        receiver,
+        kind,
         args,
         ret,
         throws,

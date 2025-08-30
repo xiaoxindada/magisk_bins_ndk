@@ -1,5 +1,6 @@
 #![allow(
     clippy::boxed_local,
+    clippy::elidable_lifetime_names,
     clippy::missing_errors_doc,
     clippy::missing_safety_doc,
     clippy::must_use_candidate,
@@ -84,6 +85,11 @@ pub mod ffi {
     pub struct Array {
         a: [i32; 4],
         b: Buffer,
+    }
+
+    #[repr(align(4))]
+    pub struct OveralignedStruct {
+        b: [u8; 4],
     }
 
     #[derive(Copy, Clone, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -243,6 +249,7 @@ pub mod ffi {
         fn c_return_borrow<'a>(s: &'a CxxString) -> UniquePtr<Borrow<'a>>;
 
         #[rust_name = "c_return_borrow_elided"]
+        #[allow(unknown_lints, mismatched_lifetime_syntaxes)]
         fn c_return_borrow(s: &CxxString) -> UniquePtr<Borrow>;
 
         fn const_member(self: &Borrow);
@@ -317,12 +324,14 @@ pub mod ffi {
         fn set(self: &mut R, n: usize) -> usize;
         fn r_method_on_shared(self: &Shared) -> String;
         fn r_get_array_sum(self: &Array) -> i32;
+        // Ensure that a Rust method can be implemented on an opaque C++ type.
+        fn r_method_on_c_get_mut(self: Pin<&mut C>) -> &mut usize;
 
         #[cxx_name = "rAliasedFunction"]
         fn r_aliased_function(x: i32) -> String;
 
         #[Self = "Shared"]
-        fn r_static_method() -> usize;
+        fn r_static_method_on_shared() -> usize;
 
         #[Self = "R"]
         fn r_static_method() -> usize;
@@ -429,7 +438,8 @@ impl ffi::Shared {
     fn r_method_on_shared(&self) -> String {
         "2020".to_owned()
     }
-    fn r_static_method() -> usize {
+
+    fn r_static_method_on_shared() -> usize {
         2023
     }
 }
@@ -437,6 +447,13 @@ impl ffi::Shared {
 impl ffi::Array {
     pub fn r_get_array_sum(&self) -> i32 {
         self.a.iter().sum()
+    }
+}
+
+// A Rust method implemented on an opaque C++ type.
+impl ffi::C {
+    pub fn r_method_on_c_get_mut(self: core::pin::Pin<&mut Self>) -> &mut usize {
+        self.getMut()
     }
 }
 

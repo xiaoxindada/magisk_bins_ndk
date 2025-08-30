@@ -23,8 +23,8 @@ public:
   Vec(Vec &&) noexcept;
   ~Vec() noexcept;
 
-  Vec &operator=(Vec &&) noexcept;
-  Vec &operator=(const Vec &);
+  Vec &operator=(Vec &&) & noexcept;
+  Vec &operator=(const Vec &) &;
 
   size_t size() const noexcept;
   bool empty() const noexcept;
@@ -66,7 +66,11 @@ public:
 ...template <typename T>
 ...class Vec<T>::iterator final {
 ...public:
+...#if __cplusplus >= 202002L
+...  using iterator_category = std::contiguous_iterator_tag;
+...#else
 ...  using iterator_category = std::random_access_iterator_tag;
+...#endif
 ...  using value_type = T;
 ...  using pointer = T *;
 ...  using reference = T &;
@@ -97,7 +101,11 @@ public:
 ...template <typename T>
 ...class Vec<T>::const_iterator final {
 ...public:
+...#if __cplusplus >= 202002L
+...  using iterator_category = std::contiguous_iterator_tag;
+...#else
 ...  using iterator_category = std::random_access_iterator_tag;
+...#endif
 ...  using value_type = const T;
 ...  using pointer = const T *;
 ...  using reference = const T &;

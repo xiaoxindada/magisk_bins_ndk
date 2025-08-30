@@ -33,6 +33,7 @@ rust_binary(
     deps = [
         "@crates.io//:clap",
         "@crates.io//:codespan-reporting",
+        "@crates.io//:indexmap",
         "@crates.io//:proc-macro2",
         "@crates.io//:quote",
         "@crates.io//:syn",
@@ -51,6 +52,7 @@ cc_library(
     name = "core-lib",
     srcs = ["src/cxx.cc"],
     hdrs = ["include/cxx.h"],
+    linkstatic = True,
 )
 
 rust_proc_macro(
@@ -61,6 +63,7 @@ rust_proc_macro(
         "@crates.io//:rustversion",
     ],
     deps = [
+        "@crates.io//:indexmap",
         "@crates.io//:proc-macro2",
         "@crates.io//:quote",
         "@crates.io//:syn",
@@ -75,6 +78,7 @@ rust_library(
     deps = [
         "@crates.io//:cc",
         "@crates.io//:codespan-reporting",
+        "@crates.io//:indexmap",
         "@crates.io//:proc-macro2",
         "@crates.io//:quote",
         "@crates.io//:scratch",
@@ -91,6 +95,7 @@ rust_library(
     deps = [
         "@crates.io//:cc",
         "@crates.io//:codespan-reporting",
+        "@crates.io//:indexmap",
         "@crates.io//:proc-macro2",
         "@crates.io//:quote",
         "@crates.io//:syn",

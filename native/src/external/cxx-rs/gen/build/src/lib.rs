@@ -19,7 +19,6 @@
 //!         .std("c++11")
 //!         .compile("cxxbridge-demo");
 //!
-//!     println!("cargo:rerun-if-changed=src/main.rs");
 //!     println!("cargo:rerun-if-changed=src/demo.cc");
 //!     println!("cargo:rerun-if-changed=include/demo.h");
 //! }
@@ -45,24 +44,26 @@
 //! $ cxxbridge src/main.rs > path/to/mybridge.cc
 //! ```
 
-#![doc(html_root_url = "https://docs.rs/cxx-build/1.0.137")]
+#![doc(html_root_url = "https://docs.rs/cxx-build/1.0.170")]
 #![cfg_attr(not(check_cfg), allow(unexpected_cfgs))]
 #![allow(
     clippy::cast_sign_loss,
     clippy::default_trait_access,
     clippy::doc_markdown,
+    clippy::elidable_lifetime_names,
     clippy::enum_glob_use,
     clippy::explicit_auto_deref,
     clippy::inherent_to_string,
     clippy::items_after_statements,
     clippy::match_bool,
-    clippy::match_on_vec_items,
+    clippy::match_like_matches_macro,
     clippy::match_same_arms,
     clippy::needless_doctest_main,
     clippy::needless_lifetimes,
     clippy::needless_pass_by_value,
     clippy::nonminimal_bool,
     clippy::redundant_else,
+    clippy::ref_as_ptr,
     clippy::ref_option,
     clippy::similar_names,
     clippy::single_match_else,
@@ -74,6 +75,7 @@
     clippy::uninlined_format_args,
     clippy::upper_case_acronyms
 )]
+#![allow(unknown_lints, mismatched_lifetime_syntaxes)]
 
 mod cargo;
 mod cfg;
@@ -110,7 +112,7 @@ pub use crate::cfg::{Cfg, CFG};
 /// additional source files or compiler flags, and lastly call its [`compile`]
 /// method to execute the C++ build.
 ///
-/// [`compile`]: https://docs.rs/cc/1.0.49/cc/struct.Build.html#method.compile
+/// [`compile`]: cc::Build::compile
 #[must_use]
 pub fn bridge(rust_source_file: impl AsRef<Path>) -> Build {
     bridges(iter::once(rust_source_file))
@@ -396,6 +398,7 @@ fn generate_bridge(prj: &Project, build: &mut Build, rust_source_file: &Path) ->
         doxygen: CFG.doxygen,
         ..Opt::default()
     };
+    println!("cargo:rerun-if-changed={}", rust_source_file.display());
     let generated = gen::generate_from_path(rust_source_file, &opt);
     let ref rel_path = paths::local_relative_path(rust_source_file);
 

@@ -1,10 +1,12 @@
 #![allow(
     clippy::cast_sign_loss,
     clippy::doc_markdown,
+    clippy::elidable_lifetime_names,
     clippy::enum_glob_use,
     clippy::inherent_to_string,
     clippy::items_after_statements,
     clippy::match_bool,
+    clippy::match_like_matches_macro,
     clippy::match_same_arms,
     clippy::needless_lifetimes,
     clippy::needless_pass_by_value,
@@ -18,6 +20,7 @@
     clippy::toplevel_ref_arg,
     clippy::uninlined_format_args
 )]
+#![allow(unknown_lints, mismatched_lifetime_syntaxes)]
 
 mod derive;
 mod expand;
@@ -25,11 +28,6 @@ mod generics;
 mod syntax;
 mod tokens;
 mod type_id;
-
-#[cfg(feature = "experimental-enum-variants-from-header")]
-mod clang;
-#[cfg(feature = "experimental-enum-variants-from-header")]
-mod load;
 
 use crate::syntax::file::Module;
 use crate::syntax::namespace::Namespace;

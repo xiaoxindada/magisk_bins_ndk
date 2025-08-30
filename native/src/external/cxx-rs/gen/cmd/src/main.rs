@@ -2,12 +2,13 @@
 #![allow(
     clippy::cast_sign_loss,
     clippy::default_trait_access,
+    clippy::elidable_lifetime_names,
     clippy::enum_glob_use,
     clippy::inherent_to_string,
     clippy::items_after_statements,
     clippy::map_clone,
     clippy::match_bool,
-    clippy::match_on_vec_items,
+    clippy::match_like_matches_macro,
     clippy::match_same_arms,
     clippy::needless_lifetimes,
     clippy::needless_pass_by_value,
@@ -23,6 +24,7 @@
     clippy::toplevel_ref_arg,
     clippy::uninlined_format_args
 )]
+#![allow(unknown_lints, mismatched_lifetime_syntaxes)]
 
 mod app;
 mod cfg;

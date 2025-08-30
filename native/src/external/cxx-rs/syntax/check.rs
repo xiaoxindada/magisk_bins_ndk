@@ -2,7 +2,7 @@ use crate::syntax::atom::Atom::{self, *};
 use crate::syntax::report::Errors;
 use crate::syntax::visit::{self, Visit};
 use crate::syntax::{
-    error, ident, trivial, Api, Array, Enum, ExternFn, ExternType, Impl, Lang, Lifetimes,
+    error, ident, trivial, Api, Array, Enum, ExternFn, ExternType, FnKind, Impl, Lang, Lifetimes,
     NamedType, Ptr, Receiver, Ref, Signature, SliceRef, Struct, Trait, Ty1, Type, TypeAlias, Types,
 };
 use proc_macro2::{Delimiter, Group, Ident, TokenStream};
@@ -357,7 +357,7 @@ fn check_api_enum(cx: &mut Check, enm: &Enum) {
     check_reserved_name(cx, &enm.name.rust);
     check_lifetimes(cx, &enm.generics);
 
-    if enm.variants.is_empty() && !enm.explicit_repr && !enm.variants_from_header {
+    if enm.variants.is_empty() && !enm.explicit_repr {
         let span = span_for_enum_error(enm);
         cx.error(
             span,
@@ -383,7 +383,7 @@ fn check_api_type(cx: &mut Check, ety: &ExternType) {
         }
         let lang = match ety.lang {
             Lang::Rust => "Rust",
-            Lang::Cxx => "C++",
+            Lang::Cxx | Lang::CxxUnwind => "C++",
         };
         let msg = format!(
             "derive({}) on opaque {} type is not supported yet",
@@ -409,7 +409,7 @@ fn check_api_type(cx: &mut Check, ety: &ExternType) {
 
 fn check_api_fn(cx: &mut Check, efn: &ExternFn) {
     match efn.lang {
-        Lang::Cxx => {
+        Lang::Cxx | Lang::CxxUnwind => {
             if !efn.generics.params.is_empty() && !efn.trusted {
                 let ref span = span_for_generics_error(efn);
                 cx.error(span, "extern C++ function with lifetimes must be declared in `unsafe extern \"C++\"` block");
@@ -427,40 +427,56 @@ fn check_api_fn(cx: &mut Check, efn: &ExternFn) {
         }
     }
 
-    check_generics(cx, &efn.sig.generics);
+    check_generics(cx, &efn.generics);
 
-    if let Some(receiver) = &efn.receiver {
-        let ref span = span_for_receiver_error(receiver);
+    match &efn.kind {
+        FnKind::Method(receiver) => {
+            let ref span = span_for_receiver_error(receiver);
 
-        if receiver.ty.rust == "Self" {
-            let mutability = match receiver.mutable {
-                true => "mut ",
-                false => "",
-            };
-            let msg = format!(
-                "unnamed receiver type is only allowed if the surrounding extern block contains exactly one extern type; use `self: &{mutability}TheType`",
-                mutability = mutability,
-            );
-            cx.error(span, msg);
-        } else if cx.types.enums.contains_key(&receiver.ty.rust) {
-            cx.error(
-                span,
-                "unsupported receiver type; C++ does not allow member functions on enums",
-            );
-        } else if !cx.types.structs.contains_key(&receiver.ty.rust)
-            && !cx.types.cxx.contains(&receiver.ty.rust)
-            && !cx.types.rust.contains(&receiver.ty.rust)
-        {
-            cx.error(span, "unrecognized receiver type");
-        } else if receiver.mutable && !receiver.pinned && is_opaque_cxx(cx, &receiver.ty.rust) {
-            cx.error(
-                span,
-                format!(
-                    "mutable reference to opaque C++ type requires a pin -- use `self: Pin<&mut {}>`",
-                    receiver.ty.rust,
-                ),
-            );
+            if receiver.ty.rust == "Self" {
+                let mutability = match receiver.mutable {
+                    true => "mut ",
+                    false => "",
+                };
+                let msg = format!(
+                    "unnamed receiver type is only allowed if the surrounding extern block contains exactly one extern type; use `self: &{mutability}TheType`",
+                    mutability = mutability,
+                );
+                cx.error(span, msg);
+            } else if cx.types.enums.contains_key(&receiver.ty.rust) {
+                cx.error(
+                    span,
+                    "unsupported receiver type; C++ does not allow member functions on enums",
+                );
+            } else if !cx.types.structs.contains_key(&receiver.ty.rust)
+                && !cx.types.cxx.contains(&receiver.ty.rust)
+                && !cx.types.rust.contains(&receiver.ty.rust)
+            {
+                cx.error(span, "unrecognized receiver type");
+            } else if receiver.mutable && !receiver.pinned && is_opaque_cxx(cx, &receiver.ty.rust) {
+                cx.error(
+                    span,
+                    format!(
+                        "mutable reference to opaque C++ type requires a pin -- use `self: Pin<&mut {}>`",
+                        receiver.ty.rust,
+                    ),
+                );
+            }
         }
+        FnKind::Assoc(self_type) => {
+            if cx.types.enums.contains_key(self_type) {
+                cx.error(
+                    self_type,
+                    "unsupported self type; C++ does not allow member functions on enums",
+                );
+            } else if !cx.types.structs.contains_key(self_type)
+                && !cx.types.cxx.contains(self_type)
+                && !cx.types.rust.contains(self_type)
+            {
+                cx.error(self_type, "unrecognized self type");
+            }
+        }
+        FnKind::Free => {}
     }
 
     for arg in &efn.args {
@@ -472,7 +488,7 @@ fn check_api_fn(cx: &mut Check, efn: &ExternFn) {
                 );
             }
         } else if let Type::Ptr(_) = arg.ty {
-            if efn.sig.unsafety.is_none() {
+            if efn.unsafety.is_none() {
                 cx.error(
                     arg,
                     "pointer argument requires that the function be marked unsafe",
@@ -497,19 +513,6 @@ fn check_api_fn(cx: &mut Check, efn: &ExternFn) {
 
     if efn.lang == Lang::Cxx {
         check_mut_return_restriction(cx, efn);
-    }
-
-    if let Some(self_type) = &efn.self_type {
-        if !cx.types.structs.contains_key(self_type)
-            && !cx.types.cxx.contains(self_type)
-            && !cx.types.rust.contains(self_type)
-        {
-            let msg = format!("unrecognized self type: {}", self_type);
-            cx.error(self_type, msg);
-        }
-        if efn.receiver.is_some() {
-            cx.error(efn, "self type and receiver are mutually exclusive");
-        }
     }
 }
 
@@ -553,7 +556,7 @@ fn check_api_impl(cx: &mut Check, imp: &Impl) {
 }
 
 fn check_mut_return_restriction(cx: &mut Check, efn: &ExternFn) {
-    if efn.sig.unsafety.is_some() {
+    if efn.unsafety.is_some() {
         // Unrestricted as long as the function is made unsafe-to-call.
         return;
     }
@@ -564,7 +567,7 @@ fn check_mut_return_restriction(cx: &mut Check, efn: &ExternFn) {
         _ => return,
     }
 
-    if let Some(receiver) = &efn.receiver {
+    if let Some(receiver) = efn.receiver() {
         if receiver.mutable {
             return;
         }

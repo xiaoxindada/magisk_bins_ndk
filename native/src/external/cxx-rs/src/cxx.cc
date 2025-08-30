@@ -4,6 +4,24 @@
 #include <iostream>
 #include <memory>
 
+#ifdef __cpp_lib_bit_cast
+#include <bit>
+#endif
+
+// Most compilers set __cpp_attributes on C++11 and up, and set __cpp_exceptions
+// if the flag `-fno-exceptions` is not set. On these compilers we detect
+// `-fno-exceptions` this way.
+//
+// Some compilers never set either one. On these, rely on the user to do
+// `-DRUST_CXX_NO_EXCEPTIONS` if they are not using exceptions.
+//
+// On MSVC, it is possible for exception throwing and catching to be enabled
+// without __cpp_exceptions being defined, so do not try to detect anything.
+#if defined(__cpp_attributes) && !defined(__cpp_exceptions) &&                 \
+    (!defined(_MSC_VER) || defined(__llvm__))
+#define RUST_CXX_NO_EXCEPTIONS
+#endif
+
 extern "C" {
 void cxxbridge1$cxx_string$init(std::string *s, const std::uint8_t *ptr,
                                 std::size_t len) noexcept {
@@ -130,6 +148,13 @@ String::String(const char *s, std::size_t len) {
              len);
 }
 
+#ifdef __cpp_char8_t
+String::String(const char8_t *s) : String(reinterpret_cast<const char *>(s)) {}
+
+String::String(const char8_t *s, std::size_t len)
+    : String(reinterpret_cast<const char *>(s), len) {}
+#endif
+
 String::String(const char16_t *s) {
   assert(s != nullptr);
   assert(is_aligned<char16_t>(s));
@@ -186,7 +211,7 @@ String String::lossy(const char16_t *s, std::size_t len) noexcept {
   return String(lossy_t{}, s, len);
 }
 
-String &String::operator=(const String &other) &noexcept {
+String &String::operator=(const String &other) & noexcept {
   if (this != &other) {
     cxxbridge1$string$drop(this);
     cxxbridge1$string$clone(this, other);
@@ -194,7 +219,7 @@ String &String::operator=(const String &other) &noexcept {
   return *this;
 }
 
-String &String::operator=(String &&other) &noexcept {
+String &String::operator=(String &&other) & noexcept {
   cxxbridge1$string$drop(this);
   this->repr = other.repr;
   cxxbridge1$string$new(&other);
@@ -318,6 +343,12 @@ Str::operator std::string() const {
   return std::string(this->data(), this->size());
 }
 
+#if __cplusplus >= 201703L
+Str::operator std::string_view() const {
+  return std::string_view(this->data(), this->size());
+}
+#endif
+
 const char *Str::data() const noexcept { return cxxbridge1$str$ptr(this); }
 
 std::size_t Str::size() const noexcept { return cxxbridge1$str$len(this); }
@@ -407,6 +438,19 @@ static_assert(sizeof(rust::isize) == sizeof(std::intptr_t),
 static_assert(alignof(rust::isize) == alignof(std::intptr_t),
               "unsupported ssize_t alignment");
 
+// The C++ standard does not guarantee a particular size, alignment, or bit
+// pattern for bool. In practice on all platforms supported by Rust, it is
+// compatible with Rust's bool. The libc crate freely uses Rust bool in
+// foreign function signatures.
+static_assert(sizeof(bool) == 1, "unsupported bool size");
+static_assert(alignof(bool) == 1, "unsupported bool alignment");
+#ifdef __cpp_lib_bit_cast
+static_assert(std::bit_cast<std::uint8_t>(false) == 0,
+              "unsupported bit representation of false");
+static_assert(std::bit_cast<std::uint8_t>(true) == 1,
+              "unsupported bit representation of true");
+#endif
+
 static_assert(std::is_trivially_copy_constructible<Str>::value,
               "trivial Str(const Str &)");
 static_assert(std::is_trivially_copy_assignable<Str>::value,
@@ -450,8 +494,9 @@ static_assert(!std::is_same<Vec<std::uint8_t>::const_iterator,
               "Vec<T>::const_iterator != Vec<T>::iterator");
 
 static const char *errorCopy(const char *ptr, std::size_t len) {
-  char *copy = new char[len];
+  char *copy = new char[len + 1];
   std::memcpy(copy, ptr, len);
+  copy[len] = '\0';
   return copy;
 }
 
@@ -487,7 +532,7 @@ Error &Error::operator=(const Error &other) & {
   return *this;
 }
 
-Error &Error::operator=(Error &&other) &noexcept {
+Error &Error::operator=(Error &&other) & noexcept {
   std::exception::operator=(std::move(other));
   delete[] this->msg;
   this->msg = other.msg;
@@ -605,9 +650,17 @@ static_assert(sizeof(std::string) <= kMaxExpectedWordsInString * sizeof(void *),
       const std::vector<CXX_TYPE> &s) noexcept {                               \
     return s.size();                                                           \
   }                                                                            \
+  std::size_t cxxbridge1$std$vector$##RUST_TYPE##$capacity(                    \
+      const std::vector<CXX_TYPE> &s) noexcept {                               \
+    return s.capacity();                                                       \
+  }                                                                            \
   CXX_TYPE *cxxbridge1$std$vector$##RUST_TYPE##$get_unchecked(                 \
       std::vector<CXX_TYPE> *s, std::size_t pos) noexcept {                    \
     return &(*s)[pos];                                                         \
+  }                                                                            \
+  void cxxbridge1$std$vector$##RUST_TYPE##$reserve(                            \
+      std::vector<CXX_TYPE> *s, std::size_t new_cap) noexcept {                \
+    s->reserve(new_cap);                                                       \
   }                                                                            \
   void cxxbridge1$unique_ptr$std$vector$##RUST_TYPE##$null(                    \
       std::unique_ptr<std::vector<CXX_TYPE>> *ptr) noexcept {                  \
@@ -703,6 +756,10 @@ static_assert(sizeof(std::string) <= kMaxExpectedWordsInString * sizeof(void *),
   void cxxbridge1$std$shared_ptr$##RUST_TYPE##$null(                           \
       std::shared_ptr<CXX_TYPE> *ptr) noexcept {                               \
     new (ptr) std::shared_ptr<CXX_TYPE>();                                     \
+  }                                                                            \
+  void cxxbridge1$std$shared_ptr$##RUST_TYPE##$raw(                            \
+      std::shared_ptr<CXX_TYPE> *ptr, CXX_TYPE *raw) noexcept {                \
+    new (ptr) std::shared_ptr<CXX_TYPE>(raw);                                  \
   }                                                                            \
   CXX_TYPE *cxxbridge1$std$shared_ptr$##RUST_TYPE##$uninit(                    \
       std::shared_ptr<CXX_TYPE> *ptr) noexcept {                               \
