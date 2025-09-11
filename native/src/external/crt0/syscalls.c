@@ -1,5 +1,7 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/statfs.h>
+#include <assert.h>
 
 #define SYS_INLINE
 #include "linux_syscall_support.h"
@@ -55,7 +57,6 @@ EXPORT_SYMBOL(umask);
 EXPORT_SYMBOL(chroot);
 EXPORT_SYMBOL(mount);
 EXPORT_SYMBOL(symlinkat);
-EXPORT_SYMBOL(statfs);
 EXPORT_SYMBOL(mkdirat);
 EXPORT_SYMBOL(ioctl);
 EXPORT_SYMBOL(fork);
@@ -85,6 +86,7 @@ EXPORT_SYMBOL(fsetxattr);
 
 SYMBOL_ALIAS(_exit, sys_exit_group);
 SYMBOL_ALIAS(openat64, openat);
+SYMBOL_ALIAS(statfs64, statfs);
 SYMBOL_ALIAS(stat64, stat);
 SYMBOL_ALIAS(lstat64, lstat);
 
@@ -94,6 +96,7 @@ _syscall3(int, fchown, int, i, uid_t, u, gid_t, g)
 EXPORT_SYMBOL(fchown);
 EXPORT_SYMBOL(fstat);
 EXPORT_SYMBOL(mmap);
+EXPORT_SYMBOL(statfs);
 SYMBOL_ALIAS(fstatat, sys_newfstatat);
 SYMBOL_ALIAS(lseek64, lseek);
 SYMBOL_ALIAS(ftruncate64, ftruncate);
@@ -143,6 +146,12 @@ void *mmap64(void* addr, size_t size, int prot, int flags, int fd, off64_t offse
 
 void *mmap(void *addr, size_t size, int prot, int flags, int fd, off_t offset) {
     return mmap64(addr, size, prot, flags, fd, (off64_t) offset);
+}
+
+static_assert(sizeof(struct statfs) == sizeof(struct kernel_statfs64), "");
+
+int statfs(const char* path, struct statfs* result) {
+    return sys__statfs64(path, sizeof(*result), (void *) result);
 }
 
 #endif

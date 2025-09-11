@@ -1,7 +1,7 @@
 use crate::ffi::{FileFormat, check_fmt};
-use base::libc::{O_RDONLY, O_TRUNC, O_WRONLY};
 use base::{
     Chunker, FileOrStd, LoggedResult, ReadExt, ResultExt, Utf8CStr, Utf8CString, WriteExt, log_err,
+    nix::fcntl::OFlag,
 };
 use bzip2::{Compression as BzCompression, read::BzDecoder, write::BzEncoder};
 use flate2::{Compression as GzCompression, read::MultiGzDecoder, write::GzEncoder};
@@ -9,7 +9,7 @@ use lz4::{
     BlockMode, BlockSize, ContentChecksum, Decoder as LZ4FrameDecoder, Encoder as LZ4FrameEncoder,
     EncoderBuilder as LZ4FrameEncoderBuilder, block::CompressionMode, liblz4::BlockChecksum,
 };
-use lzma_rust2::{CheckType, LZMAOptions, LZMAReader, LZMAWriter, XZOptions, XZReader, XZWriter};
+use lzma_rust2::{CheckType, LzmaOptions, LzmaReader, LzmaWriter, XzOptions, XzReader, XzWriter};
 use std::cmp::min;
 use std::fmt::Write as FmtWrite;
 use std::fs::File;
@@ -36,7 +36,7 @@ macro_rules! finish_impl {
     )*}
 }
 
-finish_impl!(GzEncoder<W>, BzEncoder<W>, XZWriter<W>, LZMAWriter<W>);
+finish_impl!(GzEncoder<W>, BzEncoder<W>, XzWriter<W>, LzmaWriter<W>);
 
 impl<W: Write> WriteFinish<W> for BufWriter<ZopFliEncoder<W>> {
     fn finish(self: Box<Self>) -> std::io::Result<W> {
@@ -215,12 +215,12 @@ impl<R: Read> Read for LZ4BlockDecoder<R> {
 pub fn get_encoder<'a, W: Write + 'a>(format: FileFormat, w: W) -> Box<dyn WriteFinish<W> + 'a> {
     match format {
         FileFormat::XZ => {
-            let mut opt = XZOptions::with_preset(9);
+            let mut opt = XzOptions::with_preset(9);
             opt.set_check_sum_type(CheckType::Crc32);
-            Box::new(XZWriter::new(w, opt).unwrap())
+            Box::new(XzWriter::new(w, opt).unwrap())
         }
         FileFormat::LZMA => {
-            Box::new(LZMAWriter::new_use_header(w, &LZMAOptions::with_preset(9), None).unwrap())
+            Box::new(LzmaWriter::new_use_header(w, &LzmaOptions::with_preset(9), None).unwrap())
         }
         FileFormat::BZIP2 => Box::new(BzEncoder::new(w, BzCompression::best())),
         FileFormat::LZ4 => {
@@ -253,8 +253,8 @@ pub fn get_encoder<'a, W: Write + 'a>(format: FileFormat, w: W) -> Box<dyn Write
 
 pub fn get_decoder<'a, R: Read + 'a>(format: FileFormat, r: R) -> Box<dyn Read + 'a> {
     match format {
-        FileFormat::XZ => Box::new(XZReader::new(r, true)),
-        FileFormat::LZMA => Box::new(LZMAReader::new_mem_limit(r, u32::MAX, None).unwrap()),
+        FileFormat::XZ => Box::new(XzReader::new(r, true)),
+        FileFormat::LZMA => Box::new(LzmaReader::new_mem_limit(r, u32::MAX, None).unwrap()),
         FileFormat::BZIP2 => Box::new(BzDecoder::new(r)),
         FileFormat::LZ4 => Box::new(LZ4FrameDecoder::new(r).unwrap()),
         FileFormat::LZ4_LG | FileFormat::LZ4_LEGACY => Box::new(LZ4BlockDecoder::new(r)),
@@ -293,7 +293,7 @@ pub(crate) fn decompress_cmd(infile: &Utf8CStr, outfile: Option<&Utf8CStr>) -> L
     let input = if in_std {
         FileOrStd::StdIn
     } else {
-        FileOrStd::File(infile.open(O_RDONLY)?)
+        FileOrStd::File(infile.open(OFlag::O_RDONLY)?)
     };
 
     // First read some bytes for format detection
@@ -316,7 +316,7 @@ pub(crate) fn decompress_cmd(infile: &Utf8CStr, outfile: Option<&Utf8CStr>) -> L
         if outfile == "-" {
             FileOrStd::StdOut
         } else {
-            FileOrStd::File(outfile.create(O_WRONLY | O_TRUNC, 0o644)?)
+            FileOrStd::File(outfile.create(OFlag::O_WRONLY | OFlag::O_TRUNC, 0o644)?)
         }
     } else if in_std {
         FileOrStd::StdOut
@@ -332,7 +332,7 @@ pub(crate) fn decompress_cmd(infile: &Utf8CStr, outfile: Option<&Utf8CStr>) -> L
 
         rm_in = true;
         eprintln!("Decompressing to [{outfile}]");
-        FileOrStd::File(outfile.create(O_WRONLY | O_TRUNC, 0o644)?)
+        FileOrStd::File(outfile.create(OFlag::O_WRONLY | OFlag::O_TRUNC, 0o644)?)
     };
 
     let mut decoder = get_decoder(format, Cursor::new(buf).chain(input.as_file()));
@@ -356,14 +356,14 @@ pub(crate) fn compress_cmd(
     let input = if in_std {
         FileOrStd::StdIn
     } else {
-        FileOrStd::File(infile.open(O_RDONLY)?)
+        FileOrStd::File(infile.open(OFlag::O_RDONLY)?)
     };
 
     let output = if let Some(outfile) = outfile {
         if outfile == "-" {
             FileOrStd::StdOut
         } else {
-            FileOrStd::File(outfile.create(O_WRONLY | O_TRUNC, 0o644)?)
+            FileOrStd::File(outfile.create(OFlag::O_WRONLY | OFlag::O_TRUNC, 0o644)?)
         }
     } else if in_std {
         FileOrStd::StdOut
@@ -374,7 +374,7 @@ pub(crate) fn compress_cmd(
         outfile.write_str(method.ext()).ok();
         eprintln!("Compressing to [{outfile}]");
         rm_in = true;
-        let outfile = outfile.create(O_WRONLY | O_TRUNC, 0o644)?;
+        let outfile = outfile.create(OFlag::O_WRONLY | OFlag::O_TRUNC, 0o644)?;
         FileOrStd::File(outfile)
     };
 

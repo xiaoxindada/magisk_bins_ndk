@@ -1,23 +1,19 @@
-use base::libc::ssize_t;
-use base::{
-    LibcReturn, LoggedResult, OsResult, PipeFd, ReadExt, ResultExt, error, libc, log_err,
-    make_pipe, warn,
-};
-use bytemuck::{Pod, Zeroable};
-use libc::{
-    O_CLOEXEC, POLLIN, SFD_CLOEXEC, SIG_BLOCK, SIGWINCH, STDIN_FILENO, STDOUT_FILENO, TCSADRAIN,
-    TCSAFLUSH, TIOCGWINSZ, TIOCSWINSZ, cfmakeraw, close, poll, pollfd, raise, sigaddset,
-    sigemptyset, signalfd, signalfd_siginfo, sigprocmask, sigset_t, tcgetattr, tcsetattr, termios,
-    winsize,
+use base::{FileOrStd, LibcReturn, LoggedResult, OsResult, ResultExt, libc, warn};
+use libc::{STDIN_FILENO, TIOCGWINSZ, TIOCSWINSZ, c_int, winsize};
+use nix::{
+    fcntl::{OFlag, SpliceFFlags},
+    poll::{PollFd, PollFlags, PollTimeout, poll},
+    sys::signal::{SigSet, Signal, raise},
+    sys::signalfd::{SfdFlags, SignalFd},
+    sys::termios::{SetArg, Termios, cfmakeraw, tcgetattr, tcsetattr},
+    unistd::pipe2,
 };
 use std::fs::File;
 use std::io::{Read, Write};
-use std::mem::{ManuallyDrop, MaybeUninit};
-use std::os::fd::{AsRawFd, FromRawFd, RawFd};
+use std::mem::MaybeUninit;
+use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::{ffi::c_int, ptr::null_mut};
 
-static mut OLD_STDIN: Option<termios> = None;
 static SHOULD_USE_SPLICE: AtomicBool = AtomicBool::new(true);
 const TIOCGPTN: u32 = 0x80045430;
 
@@ -34,162 +30,145 @@ pub fn get_pty_num(fd: i32) -> i32 {
     pty_num
 }
 
-fn set_stdin_raw() -> bool {
-    unsafe {
-        let mut termios: termios = std::mem::zeroed();
-
-        if tcgetattr(STDIN_FILENO, &mut termios) < 0 {
-            return false;
-        }
-
-        let old_c_oflag = termios.c_oflag;
-        OLD_STDIN = Some(termios);
-
-        cfmakeraw(&mut termios);
-
-        // don't modify output flags, since we are not setting stdout raw
-        termios.c_oflag = old_c_oflag;
-
-        if tcsetattr(STDIN_FILENO, TCSAFLUSH, &termios) < 0
-            && tcsetattr(STDIN_FILENO, TCSADRAIN, &termios) < 0
-        {
-            warn!("Failed to set terminal attributes");
-            return false;
-        }
-    }
-
-    true
-}
-
-pub fn restore_stdin() -> bool {
-    unsafe {
-        if let Some(ref termios) = OLD_STDIN
-            && tcsetattr(STDIN_FILENO, TCSAFLUSH, termios) < 0
-            && tcsetattr(STDIN_FILENO, TCSADRAIN, termios) < 0
-        {
-            warn!("Failed to restore terminal attributes");
-            return false;
-        }
-        OLD_STDIN = None;
-        true
-    }
-}
-
-fn resize_pty(outfd: i32) {
+fn sync_winsize(ptmx: i32) {
     let mut ws: winsize = unsafe { std::mem::zeroed() };
     if unsafe { ioctl(STDIN_FILENO, TIOCGWINSZ as u32, &mut ws) } >= 0 {
-        unsafe { ioctl(outfd, TIOCSWINSZ as u32, &ws) };
+        unsafe { ioctl(ptmx, TIOCSWINSZ as u32, &ws) };
     }
 }
 
-fn splice(fd_in: RawFd, fd_out: RawFd, len: usize, flags: u32) -> OsResult<'static, ssize_t> {
-    unsafe { libc::splice(fd_in, null_mut(), fd_out, null_mut(), len, flags) }
-        .as_os_result("splice", None, None)
+fn splice(fd_in: impl AsFd, fd_out: impl AsFd, len: usize) -> OsResult<'static, usize> {
+    nix::fcntl::splice(fd_in, None, fd_out, None, len, SpliceFFlags::empty())
+        .into_os_result("splice", None, None)
 }
 
-fn pump_via_copy(infd: RawFd, outfd: RawFd) -> LoggedResult<()> {
+fn pump_via_copy(mut fd_in: &File, mut fd_out: &File) -> LoggedResult<()> {
     let mut buf = MaybeUninit::<[u8; 4096]>::uninit();
     let buf = unsafe { buf.assume_init_mut() };
-    let mut infd = ManuallyDrop::new(unsafe { File::from_raw_fd(infd) });
-    let mut outfd = ManuallyDrop::new(unsafe { File::from_raw_fd(outfd) });
-    let len = infd.read(buf)?;
-    outfd.write_all(&buf[..len])?;
+    let len = fd_in.read(buf)?;
+    fd_out.write_all(&buf[..len])?;
     Ok(())
 }
 
-fn pump_via_splice(infd: RawFd, outfd: RawFd, pipe: &PipeFd) -> LoggedResult<()> {
+fn pump_via_splice(fd_in: &File, fd_out: &File, pipe: &(OwnedFd, OwnedFd)) -> LoggedResult<()> {
     if !SHOULD_USE_SPLICE.load(Ordering::Acquire) {
-        return pump_via_copy(infd, outfd);
+        return pump_via_copy(fd_in, fd_out);
     }
 
     // The pipe capacity is by default 16 pages, let's just use 65536
-    let Ok(len) = splice(infd, pipe.write.as_raw_fd(), 65536_usize, 0) else {
+    let Ok(len) = splice(fd_in, &pipe.1, 65536) else {
         // If splice failed, stop using splice and fallback to userspace copy
         SHOULD_USE_SPLICE.store(false, Ordering::Release);
-        return pump_via_copy(infd, outfd);
+        return pump_via_copy(fd_in, fd_out);
     };
     if len == 0 {
         return Ok(());
     }
-    splice(pipe.read.as_raw_fd(), outfd, len as usize, 0)?;
+    splice(&pipe.0, fd_out, len)?;
     Ok(())
 }
 
-#[derive(Copy, Clone)]
-#[repr(transparent)]
-struct SignalFdInfo(signalfd_siginfo);
-unsafe impl Zeroable for SignalFdInfo {}
-unsafe impl Pod for SignalFdInfo {}
+fn set_stdin_raw() -> LoggedResult<Termios> {
+    let mut term = tcgetattr(FileOrStd::StdIn.as_file())?;
+    let old_term = term.clone();
 
-pub fn pump_tty(infd: i32, outfd: i32) {
-    set_stdin_raw();
+    let old_output_flags = old_term.output_flags;
+    cfmakeraw(&mut term);
 
-    let signal_fd = unsafe {
-        let mut mask: sigset_t = std::mem::zeroed();
-        sigemptyset(&mut mask);
-        sigaddset(&mut mask, SIGWINCH);
-        sigprocmask(SIG_BLOCK, &mask, null_mut())
-            .check_os_err("sigprocmask", None, None)
-            .log_ok();
-        signalfd(-1, &mask, SFD_CLOEXEC)
-    };
+    // Preserve output_flags, since we are not setting stdout raw
+    term.output_flags = old_output_flags;
 
-    resize_pty(outfd);
+    tcsetattr(FileOrStd::StdIn.as_file(), SetArg::TCSAFLUSH, &term)
+        .or_else(|_| tcsetattr(FileOrStd::StdIn.as_file(), SetArg::TCSADRAIN, &term))
+        .check_os_err("tcsetattr", None, None)
+        .log_with_msg(|w| w.write_str("Failed to set terminal attributes"))?;
 
-    let mut pfds = [
-        pollfd {
-            fd: if outfd > 0 { STDIN_FILENO } else { -1 },
-            events: POLLIN,
-            revents: 0,
-        },
-        pollfd {
-            fd: infd,
-            events: POLLIN,
-            revents: 0,
-        },
-        pollfd {
-            fd: signal_fd,
-            events: POLLIN,
-            revents: 0,
-        },
-    ];
+    Ok(old_term)
+}
 
-    let Ok(pipe_fd) = make_pipe(O_CLOEXEC).log() else {
-        return;
-    };
+fn restore_stdin(term: Termios) -> LoggedResult<()> {
+    tcsetattr(FileOrStd::StdIn.as_file(), SetArg::TCSAFLUSH, &term)
+        .or_else(|_| tcsetattr(FileOrStd::StdIn.as_file(), SetArg::TCSADRAIN, &term))
+        .check_os_err("tcsetattr", None, None)
+        .log_with_msg(|w| w.write_str("Failed to restore terminal attributes"))
+}
+
+fn pump_tty_impl(ptmx: File, pump_stdin: bool) -> LoggedResult<()> {
+    let mut signal_fd: Option<SignalFd> = None;
+
+    let raw_ptmx = ptmx.as_raw_fd();
+    let mut raw_sig = -1;
+
+    let mut poll_fds = Vec::with_capacity(3);
+    poll_fds.push(PollFd::new(ptmx.as_fd(), PollFlags::POLLIN));
+    if pump_stdin {
+        // If stdin is tty, we need to monitor SIGWINCH
+        let mut set = SigSet::empty();
+        set.add(Signal::SIGWINCH);
+        set.thread_block()
+            .check_os_err("pthread_sigmask", None, None)?;
+        let sig = SignalFd::with_flags(&set, SfdFlags::SFD_CLOEXEC)
+            .into_os_result("signalfd", None, None)?;
+        raw_sig = sig.as_raw_fd();
+        signal_fd = Some(sig);
+        poll_fds.push(PollFd::new(
+            signal_fd.as_ref().unwrap().as_fd(),
+            PollFlags::POLLIN,
+        ));
+
+        // We also need to pump stdin to ptmx
+        poll_fds.push(PollFd::new(
+            FileOrStd::StdIn.as_file().as_fd(),
+            PollFlags::POLLIN,
+        ));
+    }
+
+    // Any flag in this list indicates stop polling
+    let stop_flags = PollFlags::POLLERR | PollFlags::POLLHUP | PollFlags::POLLNVAL;
+
+    // Open a pipe to bypass userspace copy with splice
+    let pipe_fd = pipe2(OFlag::O_CLOEXEC).into_os_result("pipe2", None, None)?;
 
     'poll: loop {
-        let ready = unsafe { poll(pfds.as_mut_ptr(), pfds.len() as _, -1) };
-
-        if ready < 0 {
-            error!("poll error");
-            break;
-        }
-
-        for pfd in &pfds {
-            if pfd.revents & POLLIN != 0 {
-                let res = if pfd.fd == STDIN_FILENO {
-                    pump_via_splice(STDIN_FILENO, outfd, &pipe_fd)
-                } else if pfd.fd == infd {
-                    pump_via_splice(infd, STDOUT_FILENO, &pipe_fd)
-                } else if pfd.fd == signal_fd {
-                    resize_pty(outfd);
-                    let mut info = SignalFdInfo::zeroed();
-                    let mut fd = ManuallyDrop::new(unsafe { File::from_raw_fd(signal_fd) });
-                    fd.read_pod(&mut info).log()
-                } else {
-                    log_err!()
-                };
-                if res.is_err() {
-                    break 'poll;
+        // Wait for event
+        poll(&mut poll_fds, PollTimeout::NONE).check_os_err("poll", None, None)?;
+        for pfd in &poll_fds {
+            if pfd.all().unwrap_or(false) {
+                let raw_fd = pfd.as_fd().as_raw_fd();
+                if raw_fd == STDIN_FILENO {
+                    pump_via_splice(FileOrStd::StdIn.as_file(), &ptmx, &pipe_fd)?;
+                } else if raw_fd == raw_ptmx {
+                    pump_via_splice(&ptmx, FileOrStd::StdIn.as_file(), &pipe_fd)?;
+                } else if raw_fd == raw_sig {
+                    sync_winsize(raw_ptmx);
+                    signal_fd.as_ref().unwrap().read_signal()?;
                 }
-            } else if pfd.revents != 0 && pfd.fd == infd {
-                unsafe { close(pfd.fd) };
+            } else if pfd
+                .revents()
+                .unwrap_or(PollFlags::POLLHUP)
+                .intersects(stop_flags)
+            {
+                // If revents is None or contains any err_flags, stop polling
                 break 'poll;
             }
         }
     }
+    Ok(())
+}
 
-    restore_stdin();
-    unsafe { raise(SIGWINCH) };
+pub fn pump_tty(ptmx: RawFd, pump_stdin: bool) {
+    let old_term = if pump_stdin {
+        sync_winsize(ptmx);
+        set_stdin_raw().ok()
+    } else {
+        None
+    };
+
+    let ptmx = unsafe { File::from_raw_fd(ptmx) };
+    pump_tty_impl(ptmx, pump_stdin).ok();
+
+    if let Some(term) = old_term {
+        restore_stdin(term).ok();
+    }
+    raise(Signal::SIGWINCH).ok();
 }

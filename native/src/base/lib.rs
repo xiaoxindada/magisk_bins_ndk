@@ -1,7 +1,9 @@
+#![feature(vec_into_raw_parts)]
 #![allow(clippy::missing_safety_doc)]
 
 pub use const_format;
 pub use libc;
+pub use nix;
 use num_traits::FromPrimitive;
 
 pub use cstr::{
@@ -31,7 +33,6 @@ pub mod ffi {
     #[repr(i32)]
     #[cxx_name = "LogLevel"]
     pub(crate) enum LogLevelCxx {
-        ErrorCxx,
         Error,
         Warn,
         Info,
