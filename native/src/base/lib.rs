@@ -4,14 +4,13 @@
 pub use const_format;
 pub use libc;
 pub use nix;
-use num_traits::FromPrimitive;
 
 pub use cstr::{
     FsPathFollow, StrErr, Utf8CStr, Utf8CStrBuf, Utf8CStrBufArr, Utf8CStrBufRef, Utf8CString,
 };
 use cxx_extern::*;
 pub use dir::*;
-pub use ffi::fork_dont_care;
+pub use ffi::{Utf8CStrRef, fork_dont_care};
 pub use files::*;
 pub use logging::*;
 pub use misc::*;
@@ -28,7 +27,7 @@ mod result;
 mod xwrap;
 
 #[cxx::bridge]
-pub mod ffi {
+mod ffi {
     #[derive(Copy, Clone)]
     #[repr(i32)]
     #[cxx_name = "LogLevel"]
@@ -58,9 +57,6 @@ pub mod ffi {
     extern "Rust" {
         #[cxx_name = "log_with_rs"]
         fn log_from_cxx(level: LogLevelCxx, msg: Utf8CStrRef);
-        #[cxx_name = "set_log_level_state"]
-        fn set_log_level_state_cxx(level: LogLevelCxx, enabled: bool);
-        fn exit_on_error(b: bool);
         fn cmdline_logging();
         fn parse_prop_file_rs(name: Utf8CStrRef, f: &FnBoolStrStr);
         #[cxx_name = "file_readline"]
@@ -76,11 +72,5 @@ pub mod ffi {
         fn map_file_at_for_cxx(fd: i32, path: Utf8CStrRef, rw: bool) -> &'static mut [u8];
         #[cxx_name = "map_fd"]
         fn map_fd_for_cxx(fd: i32, sz: usize, rw: bool) -> &'static mut [u8];
-    }
-}
-
-fn set_log_level_state_cxx(level: ffi::LogLevelCxx, enabled: bool) {
-    if let Some(level) = LogLevel::from_i32(level.repr) {
-        set_log_level_state(level, enabled)
     }
 }
