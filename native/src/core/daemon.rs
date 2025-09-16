@@ -1,65 +1,45 @@
-use crate::UCred;
+use crate::bootstages::BootState;
 use crate::consts::{
-    MAGISK_FULL_VER, MAGISK_PROC_CON, MAGISK_VER_CODE, MAGISK_VERSION, MAIN_CONFIG, ROOTMNT,
-    ROOTOVL, SECURE_DIR,
+    MAGISK_FILE_CON, MAGISK_FULL_VER, MAGISK_PROC_CON, MAGISK_VER_CODE, MAGISK_VERSION,
+    MAIN_CONFIG, MAIN_SOCKET, ROOTMNT, ROOTOVL,
 };
 use crate::db::Sqlite3;
 use crate::ffi::{
-    DbEntryKey, ModuleInfo, RequestCode, check_key_combo, denylist_handler, exec_common_scripts,
-    exec_module_scripts, get_magisk_tmp, initialize_denylist, scan_deny_apps, setup_magisk_env,
+    ModuleInfo, RequestCode, RespondCode, denylist_handler, get_magisk_tmp, scan_deny_apps,
 };
 use crate::logging::{android_logging, magisk_logging, setup_logfile, start_log_daemon};
-use crate::module::{disable_modules, remove_modules};
-use crate::mount::{clean_mounts, setup_preinit_dir};
+use crate::module::remove_modules;
 use crate::package::ManagerInfo;
 use crate::resetprop::{get_prop, set_prop};
 use crate::selinux::restore_tmpcon;
 use crate::socket::IpcWrite;
 use crate::su::SuInfo;
+use crate::thread::ThreadPool;
 use crate::zygisk::ZygiskState;
 use base::const_format::concatcp;
 use base::{
-    AtomicArc, BufReadExt, FsPathBuilder, ReadExt, ResultExt, Utf8CStr, Utf8CStrBuf, WriteExt,
-    cstr, error, info, libc,
+    AtomicArc, BufReadExt, FileAttr, FsPathBuilder, ReadExt, ResultExt, Utf8CStr, Utf8CStrBuf,
+    WriteExt, cstr, error, fork_dont_care, info, libc, set_nice_name,
 };
+use nix::unistd::getuid;
 use nix::{
     fcntl::OFlag,
     mount::MsFlags,
     sys::signal::SigSet,
-    unistd::{dup2_stderr, dup2_stdin, dup2_stdout, setsid},
+    unistd::{dup2_stderr, dup2_stdin, dup2_stdout, getpid, setsid},
 };
-use std::fmt::Write as FmtWrite;
-use std::fs::File;
+use num_traits::AsPrimitive;
+use std::fmt::Write as _;
 use std::io::{BufReader, Write};
-use std::os::fd::{AsFd, FromRawFd, IntoRawFd, OwnedFd};
+use std::os::fd::{AsFd, AsRawFd, IntoRawFd, RawFd};
+use std::os::unix::net::{UCred, UnixListener, UnixStream};
 use std::process::{Command, exit};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::sync::{Mutex, OnceLock};
+use std::time::Duration;
 
 // Global magiskd singleton
 pub static MAGISKD: OnceLock<MagiskD> = OnceLock::new();
-
-#[repr(u32)]
-enum BootState {
-    PostFsDataDone = (1 << 0),
-    LateStartDone = (1 << 1),
-    BootComplete = (1 << 2),
-    SafeMode = (1 << 3),
-}
-
-#[derive(Default)]
-#[repr(transparent)]
-struct BootStateFlags(u32);
-
-impl BootStateFlags {
-    fn contains(&self, stage: BootState) -> bool {
-        (self.0 & stage as u32) != 0
-    }
-
-    fn set(&mut self, stage: BootState) {
-        self.0 |= stage as u32;
-    }
-}
 
 pub const AID_ROOT: i32 = 0;
 pub const AID_SHELL: i32 = 2000;
@@ -79,14 +59,15 @@ pub const fn to_user_id(uid: i32) -> i32 {
 pub struct MagiskD {
     pub sql_connection: Mutex<Option<Sqlite3>>,
     pub manager_info: Mutex<ManagerInfo>,
-    boot_stage_lock: Mutex<BootStateFlags>,
+    pub boot_stage_lock: Mutex<BootState>,
     pub module_list: OnceLock<Vec<ModuleInfo>>,
     pub zygisk_enabled: AtomicBool,
     pub zygisk: Mutex<ZygiskState>,
     pub cached_su_info: AtomicArc<SuInfo>,
-    sdk_int: i32,
+    pub sdk_int: i32,
     pub is_emulator: bool,
     is_recovery: bool,
+    exe_attr: FileAttr,
 }
 
 impl MagiskD {
@@ -106,127 +87,7 @@ impl MagiskD {
         }
     }
 
-    fn post_fs_data(&self) -> bool {
-        setup_logfile();
-        info!("** post-fs-data mode running");
-
-        self.preserve_stub_apk();
-
-        // Check secure dir
-        let secure_dir = cstr!(SECURE_DIR);
-        if !secure_dir.exists() {
-            if self.sdk_int < 24 {
-                secure_dir.mkdir(0o700).log_ok();
-            } else {
-                error!("* {} is not present, abort", SECURE_DIR);
-                return true;
-            }
-        }
-
-        self.prune_su_access();
-
-        if !setup_magisk_env() {
-            error!("* Magisk environment incomplete, abort");
-            return true;
-        }
-
-        // Check safe mode
-        let boot_cnt = self.get_db_setting(DbEntryKey::BootloopCount);
-        self.set_db_setting(DbEntryKey::BootloopCount, boot_cnt + 1)
-            .log()
-            .ok();
-        let safe_mode = boot_cnt >= 2
-            || get_prop(cstr!("persist.sys.safemode")) == "1"
-            || get_prop(cstr!("ro.sys.safemode")) == "1"
-            || check_key_combo();
-
-        if safe_mode {
-            info!("* Safe mode triggered");
-            // Disable all modules and zygisk so next boot will be clean
-            disable_modules();
-            self.set_db_setting(DbEntryKey::ZygiskConfig, 0).log_ok();
-            return true;
-        }
-
-        exec_common_scripts(cstr!("post-fs-data"));
-        self.zygisk_enabled.store(
-            self.get_db_setting(DbEntryKey::ZygiskConfig) != 0,
-            Ordering::Release,
-        );
-        initialize_denylist();
-        self.handle_modules();
-        clean_mounts();
-
-        false
-    }
-
-    fn late_start(&self) {
-        setup_logfile();
-        info!("** late_start service mode running");
-
-        exec_common_scripts(cstr!("service"));
-        if let Some(module_list) = self.module_list.get() {
-            exec_module_scripts(cstr!("service"), module_list);
-        }
-    }
-
-    fn boot_complete(&self) {
-        setup_logfile();
-        info!("** boot-complete triggered");
-
-        // Reset the bootloop counter once we have boot-complete
-        self.set_db_setting(DbEntryKey::BootloopCount, 0).log_ok();
-
-        // At this point it's safe to create the folder
-        let secure_dir = cstr!(SECURE_DIR);
-        if !secure_dir.exists() {
-            secure_dir.mkdir(0o700).log_ok();
-        }
-
-        setup_preinit_dir();
-        self.ensure_manager();
-        self.zygisk.lock().unwrap().reset(true);
-    }
-
-    pub fn boot_stage_handler(&self, client: i32, code: i32) {
-        // Take ownership
-        let client = unsafe { OwnedFd::from_raw_fd(client) };
-        // Make sure boot stage execution is always serialized
-        let mut state = self.boot_stage_lock.lock().unwrap();
-
-        let code = RequestCode { repr: code };
-        match code {
-            RequestCode::POST_FS_DATA => {
-                if check_data() && !state.contains(BootState::PostFsDataDone) {
-                    if self.post_fs_data() {
-                        state.set(BootState::SafeMode);
-                    }
-                    state.set(BootState::PostFsDataDone);
-                }
-            }
-            RequestCode::LATE_START => {
-                drop(client);
-                if state.contains(BootState::PostFsDataDone) && !state.contains(BootState::SafeMode)
-                {
-                    self.late_start();
-                    state.set(BootState::LateStartDone);
-                }
-            }
-            RequestCode::BOOT_COMPLETE => {
-                drop(client);
-                if state.contains(BootState::PostFsDataDone) {
-                    state.set(BootState::BootComplete);
-                    self.boot_complete()
-                }
-            }
-            _ => {}
-        }
-    }
-
-    pub fn handle_request_sync(&self, client: i32, code: i32) {
-        // Take ownership
-        let mut client = unsafe { File::from_raw_fd(client) };
-        let code = RequestCode { repr: code };
+    fn handle_request_sync(&self, mut client: UnixStream, code: RequestCode) {
         match code {
             RequestCode::CHECK_VERSION => {
                 #[cfg(debug_assertions)]
@@ -258,10 +119,7 @@ impl MagiskD {
         }
     }
 
-    pub fn handle_request_async(&self, client: i32, code: i32, cred: &UCred) {
-        // Take ownership
-        let client = unsafe { OwnedFd::from_raw_fd(client) };
-        let code = RequestCode { repr: code };
+    fn handle_request_async(&self, mut client: UnixStream, code: RequestCode, cred: UCred) {
         match code {
             RequestCode::DENYLIST => {
                 denylist_handler(client.into_raw_fd());
@@ -276,14 +134,13 @@ impl MagiskD {
                 self.zygisk.lock().unwrap().reset(false);
             }
             RequestCode::SQLITE_CMD => {
-                self.db_exec_for_cli(client).ok();
+                self.db_exec_for_cli(client.into()).ok();
             }
             RequestCode::REMOVE_MODULES => {
-                let mut file = File::from(client);
                 let mut do_reboot: i32 = 0;
-                file.read_pod(&mut do_reboot).log_ok();
+                client.read_pod(&mut do_reboot).log_ok();
                 remove_modules();
-                file.write_pod(&0).log_ok();
+                client.write_pod(&0).log_ok();
                 if do_reboot != 0 {
                     self.reboot();
                 }
@@ -295,7 +152,7 @@ impl MagiskD {
         }
     }
 
-    pub fn reboot(&self) {
+    fn reboot(&self) {
         if self.is_recovery {
             Command::new("/system/bin/reboot").arg("recovery").status()
         } else {
@@ -303,9 +160,124 @@ impl MagiskD {
         }
         .ok();
     }
+
+    fn is_client(&self, pid: i32) -> bool {
+        let mut buf = cstr::buf::new::<32>();
+        write!(buf, "/proc/{pid}/exe").ok();
+        if let Ok(attr) = buf.follow_link().get_attr() {
+            attr.st.st_dev == self.exe_attr.st.st_dev && attr.st.st_ino == self.exe_attr.st.st_ino
+        } else {
+            false
+        }
+    }
+
+    fn handle_requests(&'static self, mut client: UnixStream) {
+        let Ok(cred) = client.peer_cred() else {
+            // Client died
+            return;
+        };
+
+        // There are no abstractions for SO_PEERSEC yet, call the raw C API.
+        let mut context = cstr::buf::new::<256>();
+        unsafe {
+            let mut len: libc::socklen_t = context.capacity().as_();
+            libc::getsockopt(
+                client.as_raw_fd(),
+                libc::SOL_SOCKET,
+                libc::SO_PEERSEC,
+                context.as_mut_ptr().cast(),
+                &mut len,
+            );
+        }
+        context.rebuild().ok();
+
+        let is_root = cred.uid == 0;
+        let is_shell = cred.uid == 2000;
+        let is_zygote = &context == "u:r:zygote:s0";
+
+        if !is_root && !is_zygote && !self.is_client(cred.pid.unwrap_or(-1)) {
+            // Unsupported client state
+            client.write_pod(&RespondCode::ACCESS_DENIED.repr).log_ok();
+            return;
+        }
+
+        let mut code = -1;
+        client.read_pod(&mut code).ok();
+        if !(0..RequestCode::END.repr).contains(&code)
+            || code == RequestCode::_SYNC_BARRIER_.repr
+            || code == RequestCode::_STAGE_BARRIER_.repr
+        {
+            // Unknown request code
+            return;
+        }
+
+        let code = RequestCode { repr: code };
+
+        // Permission checks
+        match code {
+            RequestCode::POST_FS_DATA
+            | RequestCode::LATE_START
+            | RequestCode::BOOT_COMPLETE
+            | RequestCode::ZYGOTE_RESTART
+            | RequestCode::SQLITE_CMD
+            | RequestCode::DENYLIST
+            | RequestCode::STOP_DAEMON => {
+                if !is_root {
+                    client.write_pod(&RespondCode::ROOT_REQUIRED.repr).log_ok();
+                    return;
+                }
+            }
+            RequestCode::REMOVE_MODULES => {
+                if !is_root && !is_shell {
+                    // Only allow root and ADB shell to remove modules
+                    client.write_pod(&RespondCode::ACCESS_DENIED.repr).log_ok();
+                    return;
+                }
+            }
+            RequestCode::ZYGISK => {
+                if !is_zygote {
+                    // Invalid client context
+                    client.write_pod(&RespondCode::ACCESS_DENIED.repr).log_ok();
+                    return;
+                }
+            }
+            _ => {}
+        }
+
+        if client.write_pod(&RespondCode::OK.repr).is_err() {
+            return;
+        }
+
+        if code.repr < RequestCode::_SYNC_BARRIER_.repr {
+            self.handle_request_sync(client, code)
+        } else if code.repr < RequestCode::_STAGE_BARRIER_.repr {
+            ThreadPool::exec_task(move || {
+                self.handle_request_async(client, code, cred);
+            })
+        } else {
+            ThreadPool::exec_task(move || {
+                self.boot_stage_handler(client, code);
+            })
+        }
+    }
 }
 
-pub fn daemon_entry() {
+fn switch_cgroup(cgroup: &str, pid: i32) {
+    let mut buf = cstr::buf::new::<64>()
+        .join_path(cgroup)
+        .join_path("cgroup.procs");
+    if !buf.exists() {
+        return;
+    }
+    if let Ok(mut file) = buf.open(OFlag::O_WRONLY | OFlag::O_APPEND | OFlag::O_CLOEXEC) {
+        buf.clear();
+        write!(buf, "{pid}").ok();
+        file.write_all(buf.as_bytes()).log_ok();
+    }
+}
+
+fn daemon_entry() {
+    set_nice_name(cstr!("magiskd"));
     android_logging();
 
     // Block all signals
@@ -371,12 +343,12 @@ pub fn daemon_entry() {
             .parse::<i32>()
             .unwrap_or(-1);
     }
-    info!("* Device API level: {}", sdk_int);
+    info!("* Device API level: {sdk_int}");
 
     restore_tmpcon().log_ok();
 
     // Escape from cgroup
-    let pid = unsafe { libc::getpid() };
+    let pid = getpid().as_raw();
     switch_cgroup("/acct", pid);
     switch_cgroup("/dev/cg2_bpf", pid);
     switch_cgroup("/sys/fs/cgroup", pid);
@@ -412,55 +384,101 @@ pub fn daemon_entry() {
     tmp_path.remove_all().ok();
     tmp_path.truncate(magisk_tmp.len());
 
-    let magiskd = MagiskD {
+    let exe_attr = cstr!("/proc/self/exe")
+        .follow_link()
+        .get_attr()
+        .log()
+        .unwrap_or_default();
+
+    let daemon = MagiskD {
         sdk_int,
         is_emulator,
         is_recovery,
+        exe_attr,
         ..Default::default()
     };
-    MAGISKD.set(magiskd).ok();
-}
+    MAGISKD.set(daemon).ok();
 
-fn switch_cgroup(cgroup: &str, pid: i32) {
-    let mut buf = cstr::buf::new::<64>()
-        .join_path(cgroup)
-        .join_path("cgroup.procs");
-    if !buf.exists() {
-        return;
-    }
-    if let Ok(mut file) = buf.open(OFlag::O_WRONLY | OFlag::O_APPEND | OFlag::O_CLOEXEC) {
-        buf.clear();
-        buf.write_fmt(format_args!("{pid}")).ok();
-        file.write_all(buf.as_bytes()).log_ok();
-    }
-}
+    let sock_path = cstr::buf::new::<64>()
+        .join_path(get_magisk_tmp())
+        .join_path(MAIN_SOCKET);
+    sock_path.remove().ok();
 
-fn check_data() -> bool {
-    if let Ok(file) = cstr!("/proc/mounts").open(OFlag::O_RDONLY | OFlag::O_CLOEXEC) {
-        let mut mnt = false;
-        BufReader::new(file).for_each_line(|line| {
-            if line.contains(" /data ") && !line.contains("tmpfs") {
-                mnt = true;
-                return false;
-            }
-            true
-        });
-        if !mnt {
-            return false;
-        }
-        let crypto = get_prop(cstr!("ro.crypto.state"));
-        return if !crypto.is_empty() {
-            if crypto != "encrypted" {
-                // Unencrypted, we can directly access data
-                true
-            } else {
-                // Encrypted, check whether vold is started
-                !get_prop(cstr!("init.svc.vold")).is_empty()
-            }
+    let Ok(sock) = UnixListener::bind(&sock_path).log() else {
+        exit(1);
+    };
+
+    sock_path.follow_link().chmod(0o666).log_ok();
+    sock_path.set_secontext(cstr!(MAGISK_FILE_CON)).log_ok();
+
+    // Loop forever to listen for requests
+    let daemon = MagiskD::get();
+    for client in sock.incoming() {
+        if let Ok(client) = client.log() {
+            daemon.handle_requests(client);
         } else {
-            // ro.crypto.state is not set, assume it's unencrypted
-            true
-        };
+            exit(1);
+        }
     }
-    false
+}
+
+pub fn connect_daemon(code: RequestCode, create: bool) -> RawFd {
+    let sock_path = cstr::buf::new::<64>()
+        .join_path(get_magisk_tmp())
+        .join_path(MAIN_SOCKET);
+
+    fn send_request(code: RequestCode, mut socket: UnixStream) -> RawFd {
+        socket.write_pod(&code.repr).log_ok();
+        let mut res = -1;
+        socket.read_pod(&mut res).log_ok();
+        let res = RespondCode { repr: res };
+        match res {
+            RespondCode::OK => socket.into_raw_fd(),
+            RespondCode::ROOT_REQUIRED => {
+                error!("Root is required for this operation");
+                -1
+            }
+            RespondCode::ACCESS_DENIED => {
+                error!("Accessed denied");
+                -1
+            }
+            _ => {
+                error!("Daemon error");
+                -1
+            }
+        }
+    }
+
+    match UnixStream::connect(&sock_path) {
+        Ok(socket) => send_request(code, socket),
+        Err(e) => {
+            if !create || !getuid().is_root() {
+                error!("Cannot connect to daemon: {e}");
+                return -1;
+            }
+
+            let mut buf = cstr::buf::new::<64>();
+            if cstr!("/proc/self/exe").read_link(&mut buf).is_err()
+                || !buf.starts_with(get_magisk_tmp().as_str())
+            {
+                error!("Start daemon on magisk tmpfs");
+                return -1;
+            }
+
+            // Fork a process and run the daemon
+            if fork_dont_care() == 0 {
+                daemon_entry();
+                exit(0);
+            }
+
+            // In the client, we keep retry and connect to the socket
+            loop {
+                if let Ok(socket) = UnixStream::connect(&sock_path) {
+                    return send_request(code, socket);
+                } else {
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+            }
+        }
+    }
 }

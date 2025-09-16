@@ -10,7 +10,7 @@ pub use cstr::{
 };
 use cxx_extern::*;
 pub use dir::*;
-pub use ffi::{Utf8CStrRef, fork_dont_care};
+pub use ffi::{Utf8CStrRef, fork_dont_care, set_nice_name};
 pub use files::*;
 pub use logging::*;
 pub use misc::*;
@@ -46,6 +46,7 @@ mod ffi {
 
         fn mut_u8_patch(buf: &mut [u8], from: &[u8], to: &[u8]) -> Vec<usize>;
         fn fork_dont_care() -> i32;
+        fn set_nice_name(name: Utf8CStrRef);
 
         type FnBoolStrStr;
         fn call(self: &FnBoolStrStr, key: &str, value: &str) -> bool;
@@ -73,4 +74,11 @@ mod ffi {
         #[cxx_name = "map_fd"]
         fn map_fd_for_cxx(fd: i32, sz: usize, rw: bool) -> &'static mut [u8];
     }
+}
+
+// In Rust, we do not want to deal with raw pointers, so we change the
+// signature of all *mut c_void to usize for new_daemon_thread.
+pub type ThreadEntry = extern "C" fn(usize) -> usize;
+unsafe extern "C" {
+    pub fn new_daemon_thread(entry: ThreadEntry, arg: usize);
 }
