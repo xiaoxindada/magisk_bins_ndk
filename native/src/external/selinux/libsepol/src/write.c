@@ -1,5 +1,5 @@
 
-/* Author : Stephen Smalley, <sds@tycho.nsa.gov> */
+/* Author : Stephen Smalley, <stephen.smalley.work@gmail.com> */
 
 /*
  * Updated: Trusted Computer Solutions, Inc. <dgoeddel@trustedcs.com>
@@ -842,7 +842,7 @@ static int cond_write_node(policydb_t * p,
 	for (cur_expr = node->expr; cur_expr != NULL; cur_expr = cur_expr->next) {
 		items = 0;
 		buf[items++] = cpu_to_le32(cur_expr->expr_type);
-		buf[items++] = cpu_to_le32(cur_expr->bool);
+		buf[items++] = cpu_to_le32(cur_expr->boolean);
 		items2 = put_entry(buf, sizeof(uint32_t), items, fp);
 		if (items2 != items)
 			return POLICYDB_ERROR;
@@ -1111,8 +1111,10 @@ static int class_write(hashtab_key_t key, hashtab_datum_t datum, void *ptr)
 		buf[1] = cpu_to_le32(cladatum->default_role);
 		if (!glblub_version && default_range == DEFAULT_GLBLUB) {
 			WARN(fp->handle,
-			     "class %s default_range set to GLBLUB but policy version is %d (%d required), discarding",
-			     p->p_class_val_to_name[cladatum->s.value - 1], p->policyvers,
+			     "class %s default_range set to GLBLUB but %spolicy version is %d (%d required), discarding",
+			     p->p_class_val_to_name[cladatum->s.value - 1],
+			     p->policy_type == POLICY_KERN ? "" : "module ",
+			     p->policyvers,
 			     p->policy_type == POLICY_KERN? POLICYDB_VERSION_GLBLUB:MOD_POLICYDB_VERSION_GLBLUB);
 			default_range = 0;
 		}
@@ -1350,7 +1352,7 @@ static int user_write(hashtab_key_t key, hashtab_datum_t datum, void *ptr)
 	return POLICYDB_SUCCESS;
 }
 
-static int (*write_f[SYM_NUM]) (hashtab_key_t key, hashtab_datum_t datum,
+static int (*const write_f[SYM_NUM]) (hashtab_key_t key, hashtab_datum_t datum,
 				void *datap) = {
 common_write, class_write, role_write, type_write, user_write,
 	    cond_write_bool, sens_write, cat_write,};
@@ -2227,7 +2229,8 @@ int policydb_write(policydb_t * p, struct policy_file *fp)
 		    p->policy_type == POLICY_BASE) ||
 		    (p->policyvers < MOD_POLICYDB_VERSION_MLS &&
 		    p->policy_type == POLICY_MOD)) {
-			ERR(fp->handle, "policy version %d cannot support MLS",
+			ERR(fp->handle, "%spolicy version %d cannot support MLS",
+			    p->policy_type == POLICY_KERN ? "" : "module ",
 			    p->policyvers);
 			return POLICYDB_ERROR;
 		}
@@ -2262,8 +2265,10 @@ int policydb_write(policydb_t * p, struct policy_file *fp)
 	info = policydb_lookup_compat(p->policyvers, p->policy_type,
 					p->target_platform);
 	if (!info) {
-		ERR(fp->handle, "compatibility lookup failed for policy "
-		    "version %d", p->policyvers);
+		ERR(fp->handle, "compatibility lookup failed for %s%s policy version %d",
+		    p->target_platform == SEPOL_TARGET_SELINUX ? "selinux" : "xen",
+		    p->policy_type == POLICY_KERN ? "" : " module",
+		    p->policyvers);
 		return POLICYDB_ERROR;
 	}
 

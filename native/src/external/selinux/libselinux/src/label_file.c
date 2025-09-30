@@ -2,7 +2,7 @@
  * File contexts backend for labeling system
  *
  * Author : Eamon Walsh <ewalsh@tycho.nsa.gov>
- * Author : Stephen Smalley <sds@tycho.nsa.gov>
+ * Author : Stephen Smalley <stephen.smalley.work@gmail.com>
  */
 
 #include <assert.h>
@@ -19,9 +19,18 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 
+#include "hashtab.h"
 #include "callbacks.h"
 #include "label_internal.h"
 #include "label_file.h"
+
+/* controls the shrink multiple of the hashtab length */
+#define SHRINK_MULTIS 1
+
+struct chkdups_key {
+	char *regex;
+	unsigned int mode;
+};
 
 /*
  * Internals, mostly moved over from matchpathcon.c
@@ -57,40 +66,103 @@ static int find_stem_from_file(struct saved_data *data, const char *key)
 }
 
 /*
+ * hash calculation and key comparison of hash table
+ */
+ignore_unsigned_overflow_
+static unsigned int symhash(hashtab_t h, const_hashtab_key_t key)
+{
+	const struct chkdups_key *k = (const struct chkdups_key *)key;
+	const char *p = NULL;
+	size_t size;
+	unsigned int val = 0;
+
+	size = strlen(k->regex);
+	for (p = k->regex; ((size_t) (p - k->regex)) < size; p++)
+		val =
+			((val << 4) | (val >> (8 * sizeof(unsigned int) - 4))) ^ (*p);
+	return val % h->size;
+}
+
+static int symcmp(hashtab_t h
+		  __attribute__ ((unused)), const_hashtab_key_t key1,
+		  const_hashtab_key_t key2)
+{
+	const struct chkdups_key *a = (const struct chkdups_key *)key1;
+	const struct chkdups_key *b = (const struct chkdups_key *)key2;
+
+	return strcmp(a->regex, b->regex) || (a->mode && b->mode && a->mode != b->mode);
+}
+
+static int destroy_chkdups_key(hashtab_key_t key)
+{
+	free(key);
+
+	return 0;
+}
+
+/*
  * Warn about duplicate specifications.
  */
 static int nodups_specs(struct saved_data *data, const char *path)
 {
-	int rc = 0;
-	unsigned int ii, jj;
+	int rc = 0, ret = 0;
+	unsigned int ii;
 	struct spec *curr_spec, *spec_arr = data->spec_arr;
+	struct chkdups_key *new = NULL;
+	unsigned int hashtab_len = (data->nspec / SHRINK_MULTIS) ? data->nspec / SHRINK_MULTIS : 1;
 
+	hashtab_t hash_table = selinux_hashtab_create(symhash, symcmp, hashtab_len);
+	if (!hash_table) {
+		rc = -1;
+		COMPAT_LOG(SELINUX_ERROR, "%s: hashtab create failed.\n", path);
+		return rc;
+	}
 	for (ii = 0; ii < data->nspec; ii++) {
-		curr_spec = &spec_arr[ii];
-		for (jj = ii + 1; jj < data->nspec; jj++) {
-			if ((!strcmp(spec_arr[jj].regex_str,
-				curr_spec->regex_str))
-			    && (!spec_arr[jj].mode || !curr_spec->mode
-				|| spec_arr[jj].mode == curr_spec->mode)) {
-				rc = -1;
-				errno = EINVAL;
-				if (strcmp(spec_arr[jj].lr.ctx_raw,
-					    curr_spec->lr.ctx_raw)) {
-					COMPAT_LOG
-						(SELINUX_ERROR,
-						 "%s: Multiple different specifications for %s  (%s and %s).\n",
-						 path, curr_spec->regex_str,
-						 spec_arr[jj].lr.ctx_raw,
-						 curr_spec->lr.ctx_raw);
-				} else {
-					COMPAT_LOG
-						(SELINUX_ERROR,
-						 "%s: Multiple same specifications for %s.\n",
-						 path, curr_spec->regex_str);
-				}
+		new = (struct chkdups_key *)malloc(sizeof(struct chkdups_key));
+		if (!new) {
+			rc = -1;
+			selinux_hashtab_destroy_key(hash_table, destroy_chkdups_key);
+			COMPAT_LOG(SELINUX_ERROR, "%s: hashtab key create failed.\n", path);
+			return rc;
+		}
+		new->regex = spec_arr[ii].regex_str;
+		new->mode = spec_arr[ii].mode;
+		ret = selinux_hashtab_insert(hash_table, (hashtab_key_t)new, &spec_arr[ii]);
+		if (ret == HASHTAB_SUCCESS)
+			continue;
+		if (ret == HASHTAB_PRESENT) {
+			curr_spec =
+				(struct spec *)selinux_hashtab_search(hash_table, (hashtab_key_t)new);
+			rc = -1;
+			errno = EINVAL;
+			free(new);
+			if (strcmp(spec_arr[ii].lr.ctx_raw, curr_spec->lr.ctx_raw)) {
+				COMPAT_LOG
+					(SELINUX_ERROR,
+					 "%s: Multiple different specifications for %s  (%s and %s).\n",
+					 path, curr_spec->regex_str,
+					 spec_arr[ii].lr.ctx_raw,
+					 curr_spec->lr.ctx_raw);
+			} else {
+				COMPAT_LOG
+					(SELINUX_ERROR,
+					 "%s: Multiple same specifications for %s.\n",
+					 path, curr_spec->regex_str);
 			}
 		}
+		if (ret == HASHTAB_OVERFLOW) {
+			rc = -1;
+			free(new);
+			COMPAT_LOG
+				(SELINUX_ERROR,
+				"%s: hashtab happen memory error.\n",
+				path);
+			break;
+		}
 	}
+
+	selinux_hashtab_destroy_key(hash_table, destroy_chkdups_key);
+
 	return rc;
 }
 
@@ -332,7 +404,7 @@ end_arch_check:
 		spec->lr.ctx_raw = str_buf;
 
 		if (strcmp(spec->lr.ctx_raw, "<<none>>") && rec->validating) {
-			if (selabel_validate(rec, &spec->lr) < 0) {
+			if (selabel_validate(&spec->lr) < 0) {
 				selinux_log(SELINUX_ERROR,
 					    "%s: context %s is invalid\n",
 					    path, spec->lr.ctx_raw);
@@ -447,12 +519,16 @@ static char *rolling_append(char *current, const char *suffix, size_t max)
 	return current;
 }
 
-static bool fcontext_is_binary(FILE *fp)
+static int fcontext_is_binary(FILE *fp)
 {
 	uint32_t magic;
+	int rc;
 
 	size_t len = fread(&magic, sizeof(magic), 1, fp);
-	rewind(fp);
+
+	rc = fseek(fp, 0L, SEEK_SET);
+	if (rc == -1)
+		return -1;
 
 	return (len && (magic == SELINUX_MAGIC_COMPILED_FCONTEXT));
 }
@@ -487,8 +563,10 @@ static FILE *open_file(const char *path, const char *suffix,
 		/* This handles the case if suffix is null */
 		path = rolling_append(stack_path, fdetails[i].suffix,
 				      sizeof(stack_path));
-		if (!path)
+		if (!path) {
+			errno = ENOMEM;
 			return NULL;
+		}
 
 		rc = stat(path, &fdetails[i].sb);
 		if (rc)
@@ -550,14 +628,20 @@ static int process_file(const char *path, const char *suffix,
 		if (fp == NULL)
 			return -1;
 
-		rc = fcontext_is_binary(fp) ?
+		rc = fcontext_is_binary(fp);
+		if (rc < 0) {
+			fclose_errno_safe(fp);
+			return -1;
+		}
+
+		rc = rc ?
 				load_mmap(fp, sb.st_size, rec, found_path) :
 				process_text_file(fp, prefix, rec, found_path);
 		if (!rc)
 			rc = digest_add_specfile(digest, fp, NULL, sb.st_size,
 				found_path);
 
-		fclose(fp);
+		fclose_errno_safe(fp);
 
 		if (!rc)
 			return 0;
@@ -626,29 +710,28 @@ static int selabel_subs_init(const char *path, struct selabel_digest *digest,
 		char *src = buf;
 		char *dst = NULL;
 
-		while (*src && isspace(*src))
+		while (*src && isspace((unsigned char)*src))
 			src++;
 		if (src[0] == '#') continue;
 		ptr = src;
-		while (*ptr && ! isspace(*ptr))
+		while (*ptr && ! isspace((unsigned char)*ptr))
 			ptr++;
 		*ptr++ = '\0';
 		if (! *src) continue;
 
 		dst = ptr;
-		while (*dst && isspace(*dst))
+		while (*dst && isspace((unsigned char)*dst))
 			dst++;
 		ptr = dst;
-		while (*ptr && ! isspace(*ptr))
+		while (*ptr && ! isspace((unsigned char)*ptr))
 			ptr++;
 		*ptr = '\0';
 		if (! *dst)
 			continue;
 
-		sub = malloc(sizeof(*sub));
+		sub = calloc(1, sizeof(*sub));
 		if (! sub)
 			goto err;
-		memset(sub, 0, sizeof(*sub));
 
 		sub->src = strdup(src);
 		if (! sub->src)
@@ -725,7 +808,7 @@ static int init(struct selabel_handle *rec, const struct selinux_opt *opts,
 
 	/* Process arguments */
 	i = n;
-	while (i--)
+	while (i--) {
 		switch(opts[i].type) {
 		case SELABEL_OPT_PATH:
 			num_paths++;
@@ -736,7 +819,15 @@ static int init(struct selabel_handle *rec, const struct selinux_opt *opts,
 		case SELABEL_OPT_BASEONLY:
 			baseonly = !!opts[i].value;
 			break;
+		case SELABEL_OPT_UNUSED:
+		case SELABEL_OPT_VALIDATE:
+		case SELABEL_OPT_DIGEST:
+			break;
+		default:
+			errno = EINVAL;
+			return -1;
 		}
+	}
 
 	if (!num_paths) {
 		num_paths = 1;
@@ -893,6 +984,7 @@ static void closef(struct selabel_handle *rec)
 		free(last_area);
 	}
 	free(data);
+	rec->data = NULL;
 }
 
 // Finds all the matches of |key| in the given context. Returns the result in
@@ -1211,7 +1303,7 @@ out:
 	return lr;
 }
 
-static enum selabel_cmp_result incomp(struct spec *spec1, struct spec *spec2, const char *reason, int i, int j)
+static enum selabel_cmp_result incomp(const struct spec *spec1, const struct spec *spec2, const char *reason, int i, int j)
 {
 	selinux_log(SELINUX_INFO,
 		    "selabel_cmp: mismatched %s on entry %d: (%s, %x, %s) vs entry %d: (%s, %x, %s)\n",
@@ -1221,21 +1313,21 @@ static enum selabel_cmp_result incomp(struct spec *spec1, struct spec *spec2, co
 	return SELABEL_INCOMPARABLE;
 }
 
-static enum selabel_cmp_result cmp(struct selabel_handle *h1,
-				   struct selabel_handle *h2)
+static enum selabel_cmp_result cmp(const struct selabel_handle *h1,
+				   const struct selabel_handle *h2)
 {
-	struct saved_data *data1 = (struct saved_data *)h1->data;
-	struct saved_data *data2 = (struct saved_data *)h2->data;
+	const struct saved_data *data1 = (const struct saved_data *)h1->data;
+	const struct saved_data *data2 = (const struct saved_data *)h2->data;
 	unsigned int i, nspec1 = data1->nspec, j, nspec2 = data2->nspec;
-	struct spec *spec_arr1 = data1->spec_arr, *spec_arr2 = data2->spec_arr;
-	struct stem *stem_arr1 = data1->stem_arr, *stem_arr2 = data2->stem_arr;
+	const struct spec *spec_arr1 = data1->spec_arr, *spec_arr2 = data2->spec_arr;
+	const struct stem *stem_arr1 = data1->stem_arr, *stem_arr2 = data2->stem_arr;
 	bool skipped1 = false, skipped2 = false;
 
 	i = 0;
 	j = 0;
 	while (i < nspec1 && j < nspec2) {
-		struct spec *spec1 = &spec_arr1[i];
-		struct spec *spec2 = &spec_arr2[j];
+		const struct spec *spec1 = &spec_arr1[i];
+		const struct spec *spec2 = &spec_arr2[j];
 
 		/*
 		 * Because sort_specs() moves exact pathnames to the
@@ -1271,8 +1363,8 @@ static enum selabel_cmp_result cmp(struct selabel_handle *h1,
 		if (spec2->stem_id == -1 && spec1->stem_id != -1)
 			return incomp(spec1, spec2, "stem_id", i, j);
 		if (spec1->stem_id != -1 && spec2->stem_id != -1) {
-			struct stem *stem1 = &stem_arr1[spec1->stem_id];
-			struct stem *stem2 = &stem_arr2[spec2->stem_id];
+			const struct stem *stem1 = &stem_arr1[spec1->stem_id];
+			const struct stem *stem2 = &stem_arr2[spec2->stem_id];
 			if (stem1->len != stem2->len ||
 			    strncmp(stem1->buf, stem2->buf, stem1->len))
 				return incomp(spec1, spec2, "stem", i, j);
@@ -1331,10 +1423,9 @@ int selabel_file_init(struct selabel_handle *rec,
 {
 	struct saved_data *data;
 
-	data = (struct saved_data *)malloc(sizeof(*data));
+	data = (struct saved_data *)calloc(1, sizeof(*data));
 	if (!data)
 		return -1;
-	memset(data, 0, sizeof(*data));
 
 	rec->data = data;
 	rec->func_close = &closef;

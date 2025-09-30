@@ -35,7 +35,7 @@ void set_matchpathcon_printf(void (*f) (const char *fmt, ...))
 	myprintf_compat = 1;
 }
 
-int compat_validate(struct selabel_handle *rec,
+int compat_validate(const struct selabel_handle *rec,
 		    struct selabel_lookup_rec *contexts,
 		    const char *path, unsigned lineno)
 {
@@ -46,8 +46,8 @@ int compat_validate(struct selabel_handle *rec,
 		rc = myinvalidcon(path, lineno, *ctx);
 	else if (mycanoncon)
 		rc = mycanoncon(path, lineno, ctx);
-	else {
-		rc = selabel_validate(rec, contexts);
+	else if (rec->validating) {
+		rc = selabel_validate(contexts);
 		if (rc < 0) {
 			if (lineno) {
 				COMPAT_LOG(SELINUX_WARNING,
@@ -58,7 +58,8 @@ int compat_validate(struct selabel_handle *rec,
 					    "%s: has invalid context %s\n", path, *ctx);
 			}
 		}
-	}
+	} else
+		rc = 0;
 
 	return rc ? -1 : 0;
 }
@@ -95,8 +96,8 @@ static int add_array_elt(char *con)
 	if (con_array_size) {
 		while (con_array_used >= con_array_size) {
 			con_array_size *= 2;
-			tmp = (char **)realloc(con_array, sizeof(char*) *
-						     con_array_size);
+			tmp = (char **)reallocarray(con_array, con_array_size,
+						    sizeof(char*));
 			if (!tmp) {
 				free_array_elts();
 				return -1;
@@ -523,8 +524,10 @@ int selinux_file_context_verify(const char *path, mode_t mode)
 			return 0;
 	}
 	
-	if (!hnd && (matchpathcon_init_prefix(NULL, NULL) < 0))
+	if (!hnd && (matchpathcon_init_prefix(NULL, NULL) < 0)){
+			freecon(con);
 			return -1;
+	}
 
 	if (selabel_lookup_raw(hnd, &fcontext, path, mode) != 0) {
 		if (errno != ENOENT)

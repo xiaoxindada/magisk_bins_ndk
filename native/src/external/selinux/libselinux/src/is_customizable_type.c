@@ -31,11 +31,15 @@ static void customizable_init(void)
 	while (fgets_unlocked(buf, selinux_page_size, fp) && ctr < UINT_MAX) {
 		ctr++;
 	}
-	rewind(fp);
+
+	if (fseek(fp, 0L, SEEK_SET) == -1) {
+		free(buf);
+		fclose(fp);
+		return;
+	}
+
 	if (ctr) {
-		list =
-		    (char **) calloc(sizeof(char *),
-						  ctr + 1);
+		list = calloc(ctr + 1, sizeof(char *));
 		if (list) {
 			i = 0;
 			while (fgets_unlocked(buf, selinux_page_size, fp)

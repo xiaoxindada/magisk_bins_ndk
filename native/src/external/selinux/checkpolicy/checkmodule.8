@@ -3,7 +3,7 @@
 checkmodule \- SELinux policy module compiler
 .SH SYNOPSIS
 .B checkmodule
-.I "[\-h] [\-b] [\-c policy_version] [\-C] [\-E] [\-m] [\-M] [\-U handle_unknown] [\-V] [\-o output_file] [input_file]"
+.I "[\-h] [\-b] [\-c policy_version] [\-C] [\-E] [\-m] [\-M] [\-N] [\-U handle_unknown] [\-V] [\-o output_file] [input_file]"
 .SH "DESCRIPTION"
 This manual page describes the
 .BR checkmodule
@@ -43,6 +43,9 @@ Generate a non-base policy module.
 .B \-M,\-\-mls
 Enable the MLS/MCS support when checking and compiling the policy module.
 .TP
+.B \-N,\-\-disable-neverallow
+Do not check neverallow rules.
+.TP
 .B \-V,\-\-version
 Show policy versions created by this program.
 .TP
@@ -72,4 +75,3 @@ SELinux Reference Policy documentation at https://github.com/SELinuxProject/refp
 This manual page was copied from the checkpolicy man page 
 written by Árpád Magosányi <mag@bunuel.tii.matav.hu>,
 and edited by Dan Walsh <dwalsh@redhat.com>.
-The program was written by Stephen Smalley <sds@tycho.nsa.gov>.

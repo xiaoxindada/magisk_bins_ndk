@@ -1,4 +1,4 @@
-/* Author : Stephen Smalley, <sds@tycho.nsa.gov> */
+/* Author : Stephen Smalley, <stephen.smalley.work@gmail.com> */
 
 /* FLASK */
 
@@ -108,7 +108,7 @@ extern int hashtab_map(hashtab_t h,
 				     hashtab_datum_t d,
 				     void *args), void *args);
 
-extern void hashtab_hash_eval(hashtab_t h, char *tag);
+extern void hashtab_hash_eval(hashtab_t h, const char *tag);
 
 #ifdef __cplusplus
 }

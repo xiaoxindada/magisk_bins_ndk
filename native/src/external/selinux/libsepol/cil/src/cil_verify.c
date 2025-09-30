@@ -68,7 +68,8 @@ static int __cil_is_reserved_name(const char *name, enum cil_flavor flavor)
 	case CIL_TYPE:
 	case CIL_TYPEATTRIBUTE:
 	case CIL_TYPEALIAS:
-		if ((name == CIL_KEY_ALL) || (name == CIL_KEY_SELF))
+		if ((name == CIL_KEY_ALL) || (name == CIL_KEY_SELF) || (name == CIL_KEY_NOTSELF)
+			|| (name == CIL_KEY_OTHER))
 			return CIL_TRUE;
 		break;
 	case CIL_CAT:
@@ -404,10 +405,12 @@ int cil_verify_decl_does_not_shadow_macro_parameter(struct cil_macro *macro, str
 	if (param_list != NULL) {
 		cil_list_for_each(item, param_list) {
 			struct cil_param *param = item->data;
-			if (param->flavor == node->flavor) {
-				if (param->str == name) {
-					cil_log(CIL_ERR, "%s %s shadows a macro parameter in macro declaration\n", cil_node_to_string(node), name);
+			if (param->str == name) {
+				if (param->flavor == node->flavor) {
+					cil_log(CIL_ERR, "Declaration of %s %s shadows a macro parameter with the same flavor\n", cil_node_to_string(node), name);
 					return SEPOL_ERR;
+				} else {
+					cil_log(CIL_WARN, "Declaration of %s %s has same name as a macro parameter with a different flavor\n", cil_node_to_string(node), name);
 				}
 			}
 		}
@@ -515,6 +518,78 @@ int __cil_verify_ranges(struct cil_list *list)
 
 exit:
 	cil_log(CIL_ERR,"Invalid Range syntax\n");
+	return rc;
+}
+
+int cil_verify_completed_ordered_list(struct cil_list *complete, struct cil_list *ordered_lists)
+{
+	struct cil_list_item *cprev, *ccurr, *cnext;
+	int found_prev, found_next;
+	int rc = SEPOL_OK;
+
+	found_prev = CIL_FALSE;
+	found_next = CIL_FALSE;
+	cprev = NULL;
+	ccurr = complete->head;
+	cnext = ccurr ? ccurr->next : NULL;
+	while (ccurr) {
+		struct cil_tree_node *node;
+		struct cil_ordered *ordered;
+		struct cil_list_item *curr_list, *oprev, *ocurr, *onext;
+		int change = CIL_FALSE;
+		cil_list_for_each(curr_list, ordered_lists) {
+			node = curr_list->data;
+			ordered = node->data;
+			oprev = NULL;
+			cil_list_for_each(ocurr, ordered->datums) {
+				onext = ocurr ? ocurr->next : NULL;
+				if (ccurr->data == ocurr->data) {
+					if (found_prev == CIL_FALSE && ((!cprev && !oprev) ||
+						(cprev && oprev && cprev->data == oprev->data))) {
+						found_prev = CIL_TRUE;
+						change = CIL_TRUE;
+					}
+					if (found_next == CIL_FALSE && ((!cnext && !onext) ||
+						(cnext && onext && cnext->data == onext->data))) {
+						found_next = CIL_TRUE;
+						change = CIL_TRUE;
+					}
+					if (found_prev && found_next) {
+						cprev = ccurr;
+						ccurr = cnext;
+						cnext = ccurr ? ccurr->next : NULL;
+						found_prev = CIL_FALSE;
+						found_next = CIL_FALSE;
+						if (!ccurr) {
+							/* Went through the whole list */
+							return rc;
+						}
+					}
+				}
+				oprev = ocurr;
+			}
+		}
+		if (!change) {
+			rc = SEPOL_ERR;
+			cil_log(CIL_ERR, "Unable to verify the order of %s\n", DATUM(ccurr->data)->fqn);
+			cil_log(CIL_ERR, "Found in the following ordering rules:\n");
+			cil_list_for_each(curr_list, ordered_lists) {
+				node = curr_list->data;
+				ordered = node->data;
+				cil_list_for_each(ocurr, ordered->datums) {
+					if (ccurr->data == ocurr->data) {
+						cil_tree_log(node, CIL_ERR, "    ");
+					}
+				}
+			}
+			cprev = ccurr;
+			ccurr = cnext;
+			cnext = ccurr ? ccurr->next : NULL;
+			found_prev = CIL_FALSE;
+			found_next = CIL_FALSE;
+		}
+	}
+
 	return rc;
 }
 
@@ -1040,6 +1115,15 @@ static int __cil_verify_booleanif_helper(struct cil_tree_node *node, __attribute
 		}
 		break;
 	}
+	case CIL_DENY_RULE:
+		if (bif->preserved_tunable) {
+			cil_tree_log(node, CIL_ERR, "Not allowed to have a deny rule in a tunableif block (treated as a booleanif due to preserve-tunables)");
+		} else {
+			cil_tree_log(node, CIL_ERR, "Not allowed to have deny rule in a booleanif block");
+		}
+		rc = SEPOL_ERR;
+		goto exit;
+		break;
 	case CIL_TYPE_RULE: /*
 	struct cil_type_rule *typerule = NULL;
 	struct cil_tree_node *temp_node = NULL;
@@ -1429,6 +1513,9 @@ static int __cil_verify_permissionx(struct cil_permissionx *permx, struct cil_tr
 		case CIL_PERMX_KIND_IOCTL:
 			kind_str = CIL_KEY_IOCTL;
 			break;
+		case CIL_PERMX_KIND_NLMSG:
+			kind_str = CIL_KEY_NLMSG;
+			break;
 		default:
 			cil_tree_log(node, CIL_ERR, "Invalid permissionx kind (%d)", permx->kind);
 			rc = SEPOL_ERR;
@@ -1700,31 +1787,112 @@ static int __add_perm_to_list(__attribute__((unused)) hashtab_key_t k, hashtab_d
 	return SEPOL_OK;
 }
 
-static int __cil_verify_classperms(struct cil_list *classperms,
-				   struct cil_symtab_datum *orig,
-				   struct cil_symtab_datum *parent,
-				   struct cil_symtab_datum *cur,
-				   enum cil_flavor flavor,
-				   unsigned steps, unsigned limit)
+static int __cil_verify_classperms(struct cil_list *classperms, struct cil_symtab_datum *orig, struct cil_symtab_datum *cur, unsigned steps, unsigned limit);
+
+static int __cil_verify_map_perm(struct cil_class *class, struct cil_perm *perm, struct cil_symtab_datum *orig, unsigned steps, unsigned limit)
+{
+	int rc;
+
+	if (!perm->classperms) {
+		cil_tree_log(NODE(class), CIL_ERR, "No class permissions for map class %s, permission %s", DATUM(class)->name, DATUM(perm)->name);
+		goto exit;
+	}
+
+	rc = __cil_verify_classperms(perm->classperms, orig, &perm->datum, steps, limit);
+	if (rc != SEPOL_OK) {
+		cil_tree_log(NODE(class), CIL_ERR, "There was an error verifying class permissions for map class %s, permission %s", DATUM(class)->name, DATUM(perm)->name);
+		goto exit;
+	}
+
+	return SEPOL_OK;
+
+exit:
+	return SEPOL_ERR;
+}
+
+
+static int __cil_verify_perms(struct cil_class *class, struct cil_list *perms, struct cil_symtab_datum *orig, unsigned steps, unsigned limit)
 {
 	int rc = SEPOL_ERR;
-	struct cil_list_item *curr;
+	int count = 0;
+	struct cil_list_item *i = NULL;
+
+	if (!perms) {
+		cil_tree_log(NODE(class), CIL_ERR, "No permissions for class %s in class permissions", DATUM(class)->name);
+		goto exit;
+	}
+
+	cil_list_for_each(i, perms) {
+		count++;
+		if (i->flavor == CIL_LIST) {
+			rc = __cil_verify_perms(class, i->data, orig, steps, limit);
+			if (rc != SEPOL_OK) {
+				goto exit;
+			}
+		} else if (i->flavor == CIL_DATUM) {
+			struct cil_perm *perm = i->data;
+			if (FLAVOR(perm) == CIL_MAP_PERM) {
+				rc = __cil_verify_map_perm(class, perm, orig, steps, limit);
+				if (rc != SEPOL_OK) {
+					goto exit;
+				}
+			}
+		} else if (i->flavor == CIL_OP) {
+			enum cil_flavor op = (enum cil_flavor)(uintptr_t)i->data;
+			if (op == CIL_ALL) {
+				struct cil_list *perm_list;
+				struct cil_list_item *j = NULL;
+				int count2 = 0;
+				cil_list_init(&perm_list, CIL_MAP_PERM);
+				cil_symtab_map(&class->perms, __add_perm_to_list, perm_list);
+				if (class->common != NULL) {
+					cil_symtab_map(&class->common->perms, __add_perm_to_list, perm_list);
+				}
+				cil_list_for_each(j, perm_list) {
+					count2++;
+					struct cil_perm *perm = j->data;
+					if (FLAVOR(perm) == CIL_MAP_PERM) {
+						rc = __cil_verify_map_perm(class, perm, orig, steps, limit);
+						if (rc != SEPOL_OK) {
+							cil_list_destroy(&perm_list, CIL_FALSE);
+							goto exit;
+						}
+					}
+				}
+				cil_list_destroy(&perm_list, CIL_FALSE);
+				if (count2 == 0) {
+					cil_tree_log(NODE(class), CIL_ERR, "Operator \"all\" used for %s which has no permissions associated with it", DATUM(class)->name);
+					goto exit;
+				}
+			}
+		} else {
+			cil_tree_log(NODE(class), CIL_ERR, "Permission list for %s has an unexpected flavor: %d", DATUM(class)->name, i->flavor);
+			goto exit;
+		}
+	}
+
+	if (count == 0) {
+		cil_tree_log(NODE(class), CIL_ERR, "Empty permissions list for class %s in class permissions", DATUM(class)->name);
+		goto exit;
+	}
+
+	return SEPOL_OK;
+
+exit:
+	return SEPOL_ERR;
+}
+
+static int __cil_verify_classperms(struct cil_list *classperms, struct cil_symtab_datum *orig, struct cil_symtab_datum *cur, unsigned steps, unsigned limit)
+{
+	int rc;
+	struct cil_list_item *i;
 
 	if (classperms == NULL) {
-		if (flavor == CIL_MAP_PERM) {
-			cil_tree_log(NODE(cur), CIL_ERR, "Map class %s does not have a classmapping for %s", parent->name, cur->name);
-		} else {
-			cil_tree_log(NODE(cur), CIL_ERR, "Classpermission %s does not have a classpermissionset", cur->name);
-		}
 		goto exit;
 	}
 
 	if (steps > 0 && orig == cur) {
-		if (flavor == CIL_MAP_PERM) {
-			cil_tree_log(NODE(cur), CIL_ERR, "Found circular class permissions involving the map class %s and permission %s", parent->name, cur->name);
-		} else {
-			cil_tree_log(NODE(cur), CIL_ERR, "Found circular class permissions involving the set %s", cur->name);
-		}
+		cil_tree_log(NODE(cur), CIL_ERR, "Found circular class permissions involving %s", cur->name);
 		goto exit;
 	} else {
 		steps++;
@@ -1735,44 +1903,20 @@ static int __cil_verify_classperms(struct cil_list *classperms,
 		}
 	}
 
-	cil_list_for_each(curr, classperms) {
-		if (curr->flavor == CIL_CLASSPERMS) {
-			struct cil_classperms *cp = curr->data;
-			if (FLAVOR(cp->class) != CIL_CLASS) { /* MAP */
-				struct cil_list_item *i = NULL;
-				cil_list_for_each(i, cp->perms) {
-					if (i->flavor != CIL_OP) {
-						struct cil_perm *cmp = i->data;
-						rc = __cil_verify_classperms(cmp->classperms, orig, &cp->class->datum, &cmp->datum, CIL_MAP_PERM, steps, limit);
-						if (rc != SEPOL_OK) {
-							goto exit;
-						}
-					} else {
-						enum cil_flavor op = (enum cil_flavor)(uintptr_t)i->data;
-						if (op == CIL_ALL) {
-							struct cil_class *mc = cp->class;
-							struct cil_list *perm_list;
-							struct cil_list_item *j = NULL;
-
-							cil_list_init(&perm_list, CIL_MAP_PERM);
-							cil_symtab_map(&mc->perms, __add_perm_to_list, perm_list);
-							cil_list_for_each(j, perm_list) {
-								struct cil_perm *cmp = j->data;
-								rc = __cil_verify_classperms(cmp->classperms, orig, &cp->class->datum, &cmp->datum, CIL_MAP_PERM, steps, limit);
-								if (rc != SEPOL_OK) {
-									cil_list_destroy(&perm_list, CIL_FALSE);
-									goto exit;
-								}
-							}
-							cil_list_destroy(&perm_list, CIL_FALSE);
-						}
-					}
-				}
+	cil_list_for_each(i, classperms) {
+		if (i->flavor == CIL_CLASSPERMS) {
+			struct cil_classperms *cp = i->data;
+			rc = __cil_verify_perms(cp->class, cp->perms, orig, steps, limit);
+			if (rc != SEPOL_OK) {
+				goto exit;
 			}
 		} else { /* SET */
-			struct cil_classperms_set *cp_set = curr->data;
+			struct cil_classperms_set *cp_set = i->data;
 			struct cil_classpermission *cp = cp_set->set;
-			rc = __cil_verify_classperms(cp->classperms, orig, NULL, &cp->datum, CIL_CLASSPERMISSION, steps, limit);
+			if (!cp->classperms) {
+				cil_tree_log(NODE(cur), CIL_ERR, "Classpermission %s does not have a classpermissionset", DATUM(cp)->name);
+			}
+			rc = __cil_verify_classperms(cp->classperms, orig, &cp->datum, steps, limit);
 			if (rc != SEPOL_OK) {
 				goto exit;
 			}
@@ -1787,9 +1931,15 @@ exit:
 
 static int __cil_verify_classpermission(struct cil_tree_node *node)
 {
+	int rc;
 	struct cil_classpermission *cp = node->data;
 
-	return __cil_verify_classperms(cp->classperms, &cp->datum, NULL, &cp->datum, CIL_CLASSPERMISSION, 0, 2);
+	rc = __cil_verify_classperms(cp->classperms, &cp->datum, &cp->datum, 0, 2);
+	if (rc != SEPOL_OK) {
+		cil_tree_log(node, CIL_ERR, "Error verifying class permissions for classpermission %s", DATUM(cp)->name);
+	}
+
+	return rc;
 }
 
 struct cil_verify_map_args {
@@ -1804,8 +1954,9 @@ static int __verify_map_perm_classperms(__attribute__((unused)) hashtab_key_t k,
 	struct cil_perm *cmp = (struct cil_perm *)d;
 	int rc;
 
-	rc = __cil_verify_classperms(cmp->classperms, &cmp->datum, &map_args->class->datum, &cmp->datum, CIL_MAP_PERM, 0, 2);
+	rc = __cil_verify_classperms(cmp->classperms, &cmp->datum, &cmp->datum, 0, 2);
 	if (rc != SEPOL_OK) {
+		cil_tree_log(NODE(cmp), CIL_ERR, "Error verifying class permissions for map class %s, permission %s", DATUM(map_args->class)->name, DATUM(cmp)->name);
 		map_args->rc = rc;
 	}
 

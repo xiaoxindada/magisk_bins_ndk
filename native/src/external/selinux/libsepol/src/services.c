@@ -1,5 +1,5 @@
 /*
- * Author : Stephen Smalley, <sds@tycho.nsa.gov>
+ * Author : Stephen Smalley, <stephen.smalley.work@gmail.com>
  */
 /*
  * Updated: Trusted Computer Solutions, Inc. <dgoeddel@trustedcs.com>
@@ -347,9 +347,11 @@ static char *get_class_info(sepol_security_class_t tclass,
 		p += len;
 		buf_used += len;
 		if (state_num < 2) {
+			char *permstr = sepol_av_to_string(policydb, tclass, constraint->permissions);
+
 			len = snprintf(p, class_buf_len - buf_used, "{%s } (",
-			sepol_av_to_string(policydb, tclass,
-				constraint->permissions));
+				       permstr ?: "<format-failure>");
+			free(permstr);
 		} else {
 			len = snprintf(p, class_buf_len - buf_used, "(");
 		}
@@ -787,8 +789,8 @@ mls_ops:
 
 	if (r_buf && ((s[0] == 0) || ((s[0] == 1 &&
 				(flags & SHOW_GRANTED) == SHOW_GRANTED)))) {
-		int len, new_buf_len;
-		char *p, **new_buf = r_buf;
+		int len;
+		char *p;
 		/*
 		* These contain the constraint components that are added to the
 		* callers reason buffer.
@@ -801,13 +803,13 @@ mls_ops:
 				len = snprintf(p, reason_buf_len - reason_buf_used,
 						"%s", buffers[x]);
 				if (len < 0 || len >= reason_buf_len - reason_buf_used) {
-					new_buf_len = reason_buf_len + REASON_BUF_SIZE;
-					*new_buf = realloc(*r_buf, new_buf_len);
-					if (!*new_buf) {
+					int new_buf_len = reason_buf_len + REASON_BUF_SIZE;
+					char *new_buf = realloc(*r_buf, new_buf_len);
+					if (!new_buf) {
 						ERR(NULL, "failed to realloc reason buffer");
 						goto out1;
 					}
-					**r_buf = **new_buf;
+					*r_buf = new_buf;
 					reason_buf_len = new_buf_len;
 					continue;
 				} else {
@@ -1237,7 +1239,25 @@ out:
  const char *sepol_av_perm_to_string(sepol_security_class_t tclass,
 					sepol_access_vector_t av)
 {
-	return sepol_av_to_string(policydb, tclass, av);
+	static char avbuf[1024];
+	char *avstr = sepol_av_to_string(policydb, tclass, av);
+	size_t len;
+
+	memset(avbuf, 0, sizeof(avbuf));
+
+	if (avstr) {
+		len = strlen(avstr);
+		if (len < sizeof(avbuf)) {
+			strcpy(avbuf, avstr);
+		} else {
+			sprintf(avbuf, "<access-vector overflowed buffer>");
+		}
+		free(avstr);
+	} else {
+		sprintf(avbuf, "<format-failure>");
+	}
+
+	return avbuf;
 }
 
 /*
@@ -1342,14 +1362,12 @@ static int sepol_compute_sid(sepol_security_id_t ssid,
 	scontext = sepol_sidtab_search(sidtab, ssid);
 	if (!scontext) {
 		ERR(NULL, "unrecognized SID %d", ssid);
-		rc = -EINVAL;
-		goto out;
+		return -EINVAL;
 	}
 	tcontext = sepol_sidtab_search(sidtab, tsid);
 	if (!tcontext) {
 		ERR(NULL, "unrecognized SID %d", tsid);
-		rc = -EINVAL;
-		goto out;
+		return -EINVAL;
 	}
 
 	if (tclass && tclass <= policydb->p_classes.nprim)
@@ -1708,7 +1726,10 @@ int next_entry(void *buf, struct policy_file *fp, size_t bytes)
 size_t put_entry(const void *ptr, size_t size, size_t n,
 			struct policy_file *fp)
 {
-	size_t bytes = size * n;
+	size_t bytes;
+
+	if (__builtin_mul_overflow(size, n, &bytes))
+		return 0;
 
 	switch (fp->type) {
 	case PF_USE_STDIO:
@@ -1745,7 +1766,7 @@ int str_read(char **strp, struct policy_file *fp, size_t len)
 	int rc;
 	char *str;
 
-	if (zero_or_saturated(len)) {
+	if (zero_or_saturated(len) || exceeds_available_bytes(fp, len, sizeof(char))) {
 		errno = EINVAL;
 		return -1;
 	}

@@ -18,27 +18,15 @@
 #include <sepol/policydb/hashtab.h>
 #include <sepol/policydb/symtab.h>
 
+#include "debug.h"
 #include "private.h"
 #include "kernel_to_common.h"
 
 
-void sepol_log_err(const char *fmt, ...)
-{
-	va_list argptr;
-	va_start(argptr, fmt);
-	if (vfprintf(stderr, fmt, argptr) < 0) {
-		_exit(EXIT_FAILURE);
-	}
-	va_end(argptr);
-	if (fprintf(stderr, "\n") < 0) {
-		_exit(EXIT_FAILURE);
-	}
-}
-
 void sepol_indent(FILE *out, int indent)
 {
 	if (fprintf(out, "%*s", indent * 4, "") < 0) {
-		sepol_log_err("Failed to write to output");
+		ERR(NULL, "Failed to write to output");
 	}
 }
 
@@ -47,59 +35,23 @@ void sepol_printf(FILE *out, const char *fmt, ...)
 	va_list argptr;
 	va_start(argptr, fmt);
 	if (vfprintf(out, fmt, argptr) < 0) {
-		sepol_log_err("Failed to write to output");
+		ERR(NULL, "Failed to write to output");
 	}
 	va_end(argptr);
 }
 
-__attribute__ ((format(printf, 1, 0)))
-static char *create_str_helper(const char *fmt, int num, va_list vargs)
+char *create_str(const char *fmt, ...)
 {
-	va_list vargs2;
-	char *str = NULL;
-	char *s;
-	size_t len, s_len;
-	int i, rc;
-
-	va_copy(vargs2, vargs);
-
-	len = strlen(fmt) + 1; /* +1 for '\0' */
-
-	for (i=0; i<num; i++) {
-		s = va_arg(vargs, char *);
-		s_len = strlen(s);
-		len += s_len > 1 ? s_len - 2 : 0; /* -2 for each %s in fmt */
-	}
-
-	str = malloc(len);
-	if (!str) {
-		sepol_log_err("Out of memory");
-		goto exit;
-	}
-
-	rc = vsnprintf(str, len, fmt, vargs2);
-	if (rc < 0 || rc >= (int)len) {
-		goto exit;
-	}
-
-	va_end(vargs2);
-
-	return str;
-
-exit:
-	free(str);
-	va_end(vargs2);
-	return NULL;
-}
-
-char *create_str(const char *fmt, int num, ...)
-{
-	char *str = NULL;
+	char *str;
 	va_list vargs;
+	int rc;
 
-	va_start(vargs, num);
-	str = create_str_helper(fmt, num, vargs);
+	va_start(vargs, fmt);
+	rc = vasprintf(&str, fmt, vargs);
 	va_end(vargs);
+
+	if (rc == -1)
+		return NULL;
 
 	return str;
 }
@@ -116,13 +68,13 @@ int strs_init(struct strs **strs, size_t size)
 
 	new = malloc(sizeof(struct strs));
 	if (!new) {
-		sepol_log_err("Out of memory");
+		ERR(NULL, "Out of memory");
 		return -1;
 	}
 
 	new->list = calloc(size, sizeof(char *));
 	if (!new->list) {
-		sepol_log_err("Out of memory");
+		ERR(NULL, "Out of memory");
 		free(new);
 		return -1;
 	}
@@ -169,7 +121,7 @@ int strs_add(struct strs *strs, char *s)
 		strs->size *= 2;
 		new = reallocarray(strs->list, strs->size, sizeof(char *));
 		if (!new) {
-			sepol_log_err("Out of memory");
+			ERR(NULL, "Out of memory");
 			return -1;
 		}
 		strs->list = new;
@@ -182,20 +134,18 @@ int strs_add(struct strs *strs, char *s)
 	return 0;
 }
 
-int strs_create_and_add(struct strs *strs, const char *fmt, int num, ...)
+int strs_create_and_add(struct strs *strs, const char *fmt, ...)
 {
 	char *str;
 	va_list vargs;
 	int rc;
 
-	va_start(vargs, num);
-	str = create_str_helper(fmt, num, vargs);
+	va_start(vargs, fmt);
+	rc = vasprintf(&str, fmt, vargs);
 	va_end(vargs);
 
-	if (!str) {
-		rc = -1;
+	if (rc == -1)
 		goto exit;
-	}
 
 	rc = strs_add(strs, str);
 	if (rc != 0) {
@@ -228,7 +178,7 @@ int strs_add_at_index(struct strs *strs, char *s, size_t index)
 		}
 		new = reallocarray(strs->list, strs->size, sizeof(char *));
 		if (!new) {
-			sepol_log_err("Out of memory");
+			ERR(NULL, "Out of memory");
 			return -1;
 		}
 		strs->list = new;
@@ -301,7 +251,7 @@ char *strs_to_str(const struct strs *strs)
 	len = strs_len_items(strs) + strs->num;
 	str = malloc(len);
 	if (!str) {
-		sepol_log_err("Out of memory");
+		ERR(NULL, "Out of memory");
 		goto exit;
 	}
 
@@ -553,7 +503,7 @@ static int ibendport_data_cmp(const void *a, const void *b)
 	if (rc)
 		return rc;
 
-	return (*aa)->u.ibendport.port - (*bb)->u.ibendport.port;
+	return spaceship_cmp((*aa)->u.ibendport.port, (*bb)->u.ibendport.port);
 }
 
 static int pirq_data_cmp(const void *a, const void *b)
@@ -625,9 +575,9 @@ static int sort_ocontext_data(struct ocontext **ocons, int (*cmp)(const void *, 
 		return 0;
 	}
 
-	data = calloc(sizeof(*data), num);
+	data = calloc(num, sizeof(*data));
 	if (!data) {
-		sepol_log_err("Out of memory\n");
+		ERR(NULL, "Out of memory");
 		return -1;
 	}
 
@@ -718,7 +668,7 @@ int sort_ocontexts(struct policydb *pdb)
 
 exit:
 	if (rc != 0) {
-		sepol_log_err("Error sorting ocontexts\n");
+		ERR(NULL, "Error sorting ocontexts");
 	}
 
 	return rc;

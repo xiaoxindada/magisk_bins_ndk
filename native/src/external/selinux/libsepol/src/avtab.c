@@ -1,5 +1,5 @@
 
-/* Author : Stephen Smalley, <sds@tycho.nsa.gov> */
+/* Author : Stephen Smalley, <stephen.smalley.work@gmail.com> */
 
 /*
  * Updated: Yuichi Nakamura <ynakam@hitachisoft.jp>
@@ -444,7 +444,6 @@ int avtab_read_item(struct policy_file *fp, uint32_t vers, avtab_t * a,
 	avtab_key_t key;
 	avtab_datum_t datum;
 	avtab_extended_perms_t xperms;
-	unsigned set;
 	unsigned int i;
 	int rc;
 
@@ -544,13 +543,13 @@ int avtab_read_item(struct policy_file *fp, uint32_t vers, avtab_t * a,
 		avtab_android_m_compat = 1;
 	}
 
-	set = 0;
-	for (i = 0; i < ARRAY_SIZE(spec_order); i++) {
-		if (key.specified & spec_order[i])
-			set++;
+	if (key.specified & ~(AVTAB_AV | AVTAB_TYPE | AVTAB_XPERMS | AVTAB_ENABLED)) {
+		ERR(fp->handle, "invalid specifier");
+		return -1;
 	}
-	if (!set || set > 1) {
-		ERR(fp->handle, "more than one specifier");
+
+	if (__builtin_popcount(key.specified & ~AVTAB_ENABLED) != 1) {
+		ERR(fp->handle, "not exactly one specifier");
 		return -1;
 	}
 
@@ -568,7 +567,8 @@ int avtab_read_item(struct policy_file *fp, uint32_t vers, avtab_t * a,
 		if (avtab_android_m_compat ||
 			(vers == POLICYDB_VERSION_XPERMS_IOCTL &&
 			buf8 != AVTAB_XPERMS_IOCTLFUNCTION &&
-			buf8 != AVTAB_XPERMS_IOCTLDRIVER)) {
+			buf8 != AVTAB_XPERMS_IOCTLDRIVER &&
+			buf8 != AVTAB_XPERMS_NLMSG)) {
 			if (xperms.specified == 0)
 				xperms.specified = AVTAB_XPERMS_IOCTLFUNCTION;
 			avtab_android_m_compat = 1;
@@ -619,7 +619,7 @@ int avtab_read(avtab_t * a, struct policy_file *fp, uint32_t vers)
 		goto bad;
 	}
 	nel = le32_to_cpu(buf[0]);
-	if (!nel) {
+	if (zero_or_saturated(nel) || exceeds_available_bytes(fp, nel, sizeof(uint32_t) * 3)) {
 		ERR(fp->handle, "table is empty");
 		goto bad;
 	}

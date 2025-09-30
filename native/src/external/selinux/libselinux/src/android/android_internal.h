@@ -55,6 +55,27 @@ struct selabel_handle* context_handle(
 		const path_alts_t *context_paths,
 		const char* name);
 
+/*
+ * This method helps in identifying paths that refer to users' app data.
+ * Labeling for app data is based on seapp_contexts and seinfo assignments
+ * rather than file_contexts and is managed by installd rather than by init.
+ */
+bool is_app_data_path(const char *pathname);
+
+/*
+ * Determines if a path is Credential Encrypted (CE).
+ * Some paths are not available when the device first boots (these are protected
+ * by a credential). They should not be processed by restorecon until decrypted.
+ * See also the --skip-ce option for restorecon.
+ */
+bool is_credential_encrypted_path(const char *pathname);
+
+/* Extract the pkgname and userid from a path.
+ * On success, the caller is responsible for free'ing pkgname.
+ * Returns 0 on success, -1 on invalid path, -2 on error.
+ */
+int extract_pkgname_and_userid(const char *pathname, char **pkgname, unsigned int *userid);
+
 /* The kind of request when looking up an seapp_context. */
 enum seapp_kind {
 	/* Returns the SELinux type for the app data directory */

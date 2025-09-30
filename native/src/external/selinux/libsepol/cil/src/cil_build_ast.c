@@ -83,6 +83,51 @@ exit:
 	return rc;
 }
 
+struct cil_symtab_datum *cil_gen_declared_string(struct cil_db *db, hashtab_key_t key, struct cil_tree_node *ast_node)
+{
+	struct cil_tree_node *parent = ast_node->parent;
+	struct cil_macro *macro = NULL;
+	symtab_t *symtab;
+	struct cil_symtab_datum *datum;
+
+	while (parent) {
+		if (parent->flavor == CIL_MACRO) {
+			/* This condition is only reached in the build phase */
+			macro = parent->data;
+			break;
+		} else if (parent->flavor == CIL_CALL) {
+			/* This condition is only reached in the resolve phase */
+			struct cil_call *call = parent->data;
+			macro = call->macro;
+			break;
+		}
+		parent = parent->parent;
+	}
+
+	if (macro && macro->params) {
+		struct cil_list_item *item;
+		cil_list_for_each(item, macro->params) {
+			struct cil_param *param = item->data;
+			if (param->flavor == CIL_DECLARED_STRING && param->str == key) {
+				return NULL;
+			}
+		}
+	}
+
+	symtab = &((struct cil_root *)db->ast->root->data)->symtab[CIL_SYM_STRINGS];
+	cil_symtab_get_datum(symtab, key, &datum);
+	if (datum != NULL) {
+		return datum;
+	}
+
+	datum = cil_malloc(sizeof(*datum));
+	cil_symtab_datum_init(datum);
+	cil_symtab_insert(symtab, key, datum, ast_node);
+	cil_list_append(db->declared_strings, CIL_DATUM, datum);
+	return datum;
+}
+
+
 static int cil_allow_multiple_decls(struct cil_db *db, enum cil_flavor f_new, enum cil_flavor f_old)
 {
 	if (f_new != f_old) {
@@ -185,6 +230,83 @@ static void cil_clear_node(struct cil_tree_node *ast_node)
 	ast_node->data = NULL;
 	ast_node->flavor = CIL_NONE;
 }
+
+int cil_gen_ordered(struct cil_db *db, struct cil_tree_node *parse_current, struct cil_tree_node *ast_node, enum cil_flavor flavor)
+{
+	enum cil_syntax syntax[] = {
+		CIL_SYN_STRING,
+		CIL_SYN_LIST,
+		CIL_SYN_END
+	};
+	size_t syntax_len = sizeof(syntax)/sizeof(*syntax);
+	struct cil_ordered *ordered = NULL;
+	struct cil_list_item *curr = NULL;
+
+	int rc = SEPOL_ERR;
+
+	if (db == NULL || parse_current == NULL || ast_node == NULL) {
+		goto exit;
+	}
+
+	rc = __cil_verify_syntax(parse_current, syntax, syntax_len);
+	if (rc !=  SEPOL_OK) {
+		goto exit;
+	}
+
+	cil_ordered_init(&ordered);
+
+	rc = cil_fill_list(parse_current->next->cl_head, flavor, &ordered->strs);
+	if (rc != SEPOL_OK) {
+		goto exit;
+	}
+
+	cil_list_for_each(curr, ordered->strs) {
+		if (curr->data == CIL_KEY_UNORDERED) {
+			if (flavor == CIL_CLASSORDER) {
+				if (curr == ordered->strs->head && curr->next == NULL) {
+					cil_log(CIL_ERR, "classorder 'unordered' keyword must be followed by one or more class.\n");
+					rc = SEPOL_ERR;
+					goto exit;
+				} else if (curr != ordered->strs->head) {
+					cil_log(CIL_ERR, "classorder can only use 'unordered' keyword as the first item in the list.\n");
+					rc = SEPOL_ERR;
+					goto exit;
+				}
+			} else {
+				cil_log(CIL_ERR, "The 'unordered' keyword can only be used with classorder rules.\n");
+				rc = SEPOL_ERR;
+				goto exit;
+			}
+		}
+	}
+
+	ast_node->data = ordered;
+	ast_node->flavor = flavor;
+
+	return SEPOL_OK;
+
+exit:
+	cil_tree_log(parse_current, CIL_ERR, "Bad ordered declaration");
+	cil_destroy_ordered(ordered);
+	return rc;
+}
+
+void cil_destroy_ordered(struct cil_ordered *ordered)
+{
+	if (ordered == NULL) {
+		return;
+	}
+
+	if (ordered->strs != NULL) {
+		cil_list_destroy(&ordered->strs, CIL_FALSE);
+	}
+	if (ordered->datums != NULL) {
+		cil_list_destroy(&ordered->datums, CIL_FALSE);
+	}
+
+	free(ordered);
+}
+
 
 int cil_gen_block(struct cil_db *db, struct cil_tree_node *parse_current, struct cil_tree_node *ast_node, uint16_t is_abstract)
 {
@@ -508,74 +630,6 @@ void cil_destroy_class(struct cil_class *class)
 	cil_symtab_destroy(&class->perms);
 
 	free(class);
-}
-
-int cil_gen_classorder(struct cil_db *db, struct cil_tree_node *parse_current, struct cil_tree_node *ast_node)
-{
-	enum cil_syntax syntax[] = {
-		CIL_SYN_STRING,
-		CIL_SYN_LIST,
-		CIL_SYN_END
-	};
-	size_t syntax_len = sizeof(syntax)/sizeof(*syntax);
-	struct cil_classorder *classorder = NULL;
-	struct cil_list_item *curr = NULL;
-	struct cil_list_item *head = NULL;
-	int rc = SEPOL_ERR;
-
-	if (db == NULL || parse_current == NULL || ast_node == NULL) {
-		goto exit;
-	}
-
-	rc = __cil_verify_syntax(parse_current, syntax, syntax_len);
-	if (rc !=  SEPOL_OK) {
-		goto exit;
-	}
-
-	cil_classorder_init(&classorder);
-
-	rc = cil_fill_list(parse_current->next->cl_head, CIL_CLASSORDER, &classorder->class_list_str);
-	if (rc != SEPOL_OK) {
-		goto exit;
-	}
-
-	head = classorder->class_list_str->head;
-	cil_list_for_each(curr, classorder->class_list_str) {
-		if (curr->data == CIL_KEY_UNORDERED) {
-			if (curr == head && curr->next == NULL) {
-				cil_log(CIL_ERR, "Classorder 'unordered' keyword must be followed by one or more class.\n");
-				rc = SEPOL_ERR;
-				goto exit;
-			} else if (curr != head) {
-				cil_log(CIL_ERR, "Classorder can only use 'unordered' keyword as the first item in the list.\n");
-				rc = SEPOL_ERR;
-				goto exit;
-			}
-		}
-	}
-
-	ast_node->data = classorder;
-	ast_node->flavor = CIL_CLASSORDER;
-
-	return SEPOL_OK;
-
-exit:
-	cil_tree_log(parse_current, CIL_ERR, "Bad classorder declaration");
-	cil_destroy_classorder(classorder);
-	return rc;
-}
-
-void cil_destroy_classorder(struct cil_classorder *classorder)
-{
-	if (classorder == NULL) {
-		return;
-	}
-
-	if (classorder->class_list_str != NULL) {
-		cil_list_destroy(&classorder->class_list_str, 1);
-	}
-
-	free(classorder);
 }
 
 int cil_gen_perm(struct cil_db *db, struct cil_tree_node *parse_current, struct cil_tree_node *ast_node, enum cil_flavor flavor, unsigned int *num_perms)
@@ -1218,66 +1272,6 @@ void cil_destroy_sidcontext(struct cil_sidcontext *sidcon)
 	}
 
 	free(sidcon);
-}
-
-int cil_gen_sidorder(struct cil_db *db, struct cil_tree_node *parse_current, struct cil_tree_node *ast_node)
-{
-	enum cil_syntax syntax[] = {
-		CIL_SYN_STRING,
-		CIL_SYN_LIST,
-		CIL_SYN_END
-	};
-	size_t syntax_len = sizeof(syntax)/sizeof(*syntax);
-	struct cil_sidorder *sidorder = NULL;
-	struct cil_list_item *curr = NULL;
-	int rc = SEPOL_ERR;
-
-	if (db == NULL || parse_current == NULL || ast_node == NULL) {
-		goto exit;
-	}
-
-	rc = __cil_verify_syntax(parse_current, syntax, syntax_len);
-	if (rc !=  SEPOL_OK) {
-		goto exit;
-	}
-
-	cil_sidorder_init(&sidorder);
-
-	rc = cil_fill_list(parse_current->next->cl_head, CIL_SIDORDER, &sidorder->sid_list_str);
-	if (rc != SEPOL_OK) {
-		goto exit;
-	}
-
-	cil_list_for_each(curr, sidorder->sid_list_str) {
-		if (curr->data == CIL_KEY_UNORDERED) {
-			cil_log(CIL_ERR, "Sidorder cannot be unordered.\n");
-			rc = SEPOL_ERR;
-			goto exit;
-		}
-	}
-
-	ast_node->data = sidorder;
-	ast_node->flavor = CIL_SIDORDER;
-
-	return SEPOL_OK;
-
-exit:
-	cil_tree_log(parse_current, CIL_ERR, "Bad sidorder declaration");
-	cil_destroy_sidorder(sidorder);
-	return rc;
-}
-
-void cil_destroy_sidorder(struct cil_sidorder *sidorder)
-{
-	if (sidorder == NULL) {
-		return;
-	}
-
-	if (sidorder->sid_list_str != NULL) {
-		cil_list_destroy(&sidorder->sid_list_str, 1);
-	}
-
-	free(sidorder);
 }
 
 int cil_gen_user(struct cil_db *db, struct cil_tree_node *parse_current, struct cil_tree_node *ast_node)
@@ -2159,8 +2153,10 @@ static int cil_fill_permissionx(struct cil_tree_node *parse_current, struct cil_
 
 	if (parse_current->data == CIL_KEY_IOCTL) {
 		permx->kind = CIL_PERMX_KIND_IOCTL;
+	} else if (parse_current->data == CIL_KEY_NLMSG) {
+		permx->kind = CIL_PERMX_KIND_NLMSG;
 	} else {
-		cil_log(CIL_ERR, "Unknown permissionx kind, %s. Must be \"ioctl\"\n", (char *)parse_current->data);
+		cil_log(CIL_ERR, "Unknown permissionx kind, %s. Must be \"ioctl\" or \"nlmsg\"\n", (char *)parse_current->data);
 		rc = SEPOL_ERR;
 		goto exit;
 	}
@@ -2287,6 +2283,60 @@ exit:
 	cil_tree_log(parse_current, CIL_ERR, "Bad allowx rule");
 	cil_destroy_avrule(rule);
 	return rc;
+}
+
+int cil_gen_deny_rule(struct cil_tree_node *parse_current, struct cil_tree_node *ast_node)
+{
+	enum cil_syntax syntax[] = {
+		CIL_SYN_STRING,
+		CIL_SYN_STRING,
+		CIL_SYN_STRING,
+		CIL_SYN_STRING | CIL_SYN_LIST,
+		CIL_SYN_END
+	};
+	size_t syntax_len = sizeof(syntax)/sizeof(*syntax);
+	struct cil_deny_rule *rule = NULL;
+	int rc = SEPOL_ERR;
+
+	if (parse_current == NULL || ast_node == NULL) {
+		goto exit;
+	}
+
+	rc = __cil_verify_syntax(parse_current, syntax, syntax_len);
+	if (rc != SEPOL_OK) {
+		goto exit;
+	}
+
+	cil_deny_rule_init(&rule);
+
+	rule->src_str = parse_current->next->data;
+	rule->tgt_str = parse_current->next->next->data;
+
+	rc = cil_fill_classperms_list(parse_current->next->next->next, &rule->classperms);
+	if (rc != SEPOL_OK) {
+		goto exit;
+	}
+
+	ast_node->data = rule;
+	ast_node->flavor = CIL_DENY_RULE;
+
+	return SEPOL_OK;
+
+exit:
+	cil_tree_log(parse_current, CIL_ERR, "Bad deny rule");
+	cil_destroy_deny_rule(rule);
+	return rc;
+}
+
+void cil_destroy_deny_rule(struct cil_deny_rule *rule)
+{
+	if (rule == NULL) {
+		return;
+	}
+
+	cil_destroy_classperms_list(&rule->classperms);
+
+	free(rule);
 }
 
 int cil_gen_type_rule(struct cil_tree_node *parse_current, struct cil_tree_node *ast_node, uint32_t rule_kind)
@@ -3126,12 +3176,6 @@ int cil_gen_aliasactual(struct cil_db *db, struct cil_tree_node *parse_current, 
 		goto exit;
 	}
 
-	if ((flavor == CIL_TYPEALIAS && parse_current->next->data == CIL_KEY_SELF) || parse_current->next->next->data == CIL_KEY_SELF) {
-		cil_log(CIL_ERR, "The keyword '%s' is reserved\n", CIL_KEY_SELF);
-		rc = SEPOL_ERR;
-		goto exit;
-	}
-
 	cil_aliasactual_init(&aliasactual);
 
 	aliasactual->alias_str = parse_current->next->data;
@@ -3364,30 +3408,29 @@ int cil_gen_typetransition(struct cil_db *db, struct cil_tree_node *parse_curren
 
 	if (s5) {
 		struct cil_nametypetransition *nametypetrans = NULL;
-
 		cil_nametypetransition_init(&nametypetrans);
+
+		ast_node->data = nametypetrans;
+		ast_node->flavor = CIL_NAMETYPETRANSITION;
 
 		nametypetrans->src_str = s1;
 		nametypetrans->tgt_str = s2;
 		nametypetrans->obj_str = s3;
-		nametypetrans->result_str = s5;
 		nametypetrans->name_str = s4;
-
-		ast_node->data = nametypetrans;
-		ast_node->flavor = CIL_NAMETYPETRANSITION;
+		nametypetrans->name = cil_gen_declared_string(db, s4, ast_node);
+		nametypetrans->result_str = s5;
 	} else {
 		struct cil_type_rule *rule = NULL;
-
 		cil_type_rule_init(&rule);
+
+		ast_node->data = rule;
+		ast_node->flavor = CIL_TYPE_RULE;
 
 		rule->rule_kind = CIL_TYPE_TRANSITION;
 		rule->src_str = s1;
 		rule->tgt_str = s2;
 		rule->obj_str = s3;
 		rule->result_str = s4;
-
-		ast_node->data = rule;
-		ast_node->flavor = CIL_TYPE_RULE;
 	}
 
 	return SEPOL_OK;
@@ -3395,16 +3438,6 @@ int cil_gen_typetransition(struct cil_db *db, struct cil_tree_node *parse_curren
 exit:
 	cil_tree_log(parse_current, CIL_ERR, "Bad typetransition declaration");
 	return rc;
-}
-
-void cil_destroy_name(struct cil_name *name)
-{
-	if (name == NULL) {
-		return;
-	}
-
-	cil_symtab_datum_destroy(&name->datum);
-	free(name);
 }
 
 void cil_destroy_typetransition(struct cil_nametypetransition *nametypetrans)
@@ -3639,126 +3672,6 @@ void cil_destroy_catset(struct cil_catset *catset)
 	cil_destroy_cats(catset->cats);
 
 	free(catset);
-}
-
-int cil_gen_catorder(struct cil_db *db, struct cil_tree_node *parse_current, struct cil_tree_node *ast_node)
-{
-	enum cil_syntax syntax[] = {
-		CIL_SYN_STRING,
-		CIL_SYN_LIST,
-		CIL_SYN_END
-	};
-	size_t syntax_len = sizeof(syntax)/sizeof(*syntax);
-	struct cil_catorder *catorder = NULL;
-	struct cil_list_item *curr = NULL;
-	int rc = SEPOL_ERR;
-
-	if (db == NULL || parse_current == NULL || ast_node == NULL) {
-		goto exit;
-	}
-
-	rc = __cil_verify_syntax(parse_current, syntax, syntax_len);
-	if (rc !=  SEPOL_OK) {
-		goto exit;
-	}
-
-	cil_catorder_init(&catorder);
-
-	rc = cil_fill_list(parse_current->next->cl_head, CIL_CATORDER, &catorder->cat_list_str);
-	if (rc != SEPOL_OK) {
-		goto exit;
-	}
-
-	cil_list_for_each(curr, catorder->cat_list_str) {
-		if (curr->data == CIL_KEY_UNORDERED) {
-			cil_log(CIL_ERR, "Category order cannot be unordered.\n");
-			rc = SEPOL_ERR;
-			goto exit;
-		}
-	}
-
-	ast_node->data = catorder;
-	ast_node->flavor = CIL_CATORDER;
-
-	return SEPOL_OK;
-
-exit:
-	cil_tree_log(parse_current, CIL_ERR, "Bad categoryorder declaration");
-	cil_destroy_catorder(catorder);
-	return rc;
-}
-
-void cil_destroy_catorder(struct cil_catorder *catorder)
-{
-	if (catorder == NULL) {
-		return;
-	}
-
-	if (catorder->cat_list_str != NULL) {
-		cil_list_destroy(&catorder->cat_list_str, 1);
-	}
-
-	free(catorder);
-}
-
-int cil_gen_sensitivityorder(struct cil_db *db, struct cil_tree_node *parse_current, struct cil_tree_node *ast_node)
-{
-	enum cil_syntax syntax[] = {
-		CIL_SYN_STRING,
-		CIL_SYN_LIST,
-		CIL_SYN_END
-	};
-	size_t syntax_len = sizeof(syntax)/sizeof(*syntax);
-	struct cil_sensorder *sensorder = NULL;
-	struct cil_list_item *curr = NULL;
-	int rc = SEPOL_ERR;
-
-	if (db == NULL || parse_current == NULL || ast_node == NULL) {
-		goto exit;
-	}
-
-	rc = __cil_verify_syntax(parse_current, syntax, syntax_len);
-	if (rc != SEPOL_OK) {
-		goto exit;
-	}
-
-	cil_sensorder_init(&sensorder);
-
-	rc = cil_fill_list(parse_current->next->cl_head, CIL_SENSITIVITYORDER, &sensorder->sens_list_str);
-	if (rc != SEPOL_OK) {
-		goto exit;
-	}
-
-	cil_list_for_each(curr, sensorder->sens_list_str) {
-		if (curr->data == CIL_KEY_UNORDERED) {
-			cil_log(CIL_ERR, "Sensitivity order cannot be unordered.\n");
-			rc = SEPOL_ERR;
-			goto exit;
-		}
-	}
-
-	ast_node->data = sensorder;
-	ast_node->flavor = CIL_SENSITIVITYORDER;
-
-	return SEPOL_OK;
-
-exit:
-	cil_tree_log(parse_current, CIL_ERR, "Bad sensitivityorder declaration");
-	cil_destroy_sensitivityorder(sensorder);
-	return rc;
-}
-
-void cil_destroy_sensitivityorder(struct cil_sensorder *sensorder)
-{
-	if (sensorder == NULL) {
-		return;
-	}
-
-	if (sensorder->sens_list_str != NULL) {
-		cil_list_destroy(&sensorder->sens_list_str, CIL_TRUE);
-	}
-
-	free(sensorder);
 }
 
 int cil_gen_senscat(struct cil_db *db, struct cil_tree_node *parse_current, struct cil_tree_node *ast_node)
@@ -4227,7 +4140,12 @@ int cil_gen_filecon(struct cil_db *db, struct cil_tree_node *parse_current, stru
 	type = parse_current->next->next->data;
 	cil_filecon_init(&filecon);
 
+	ast_node->data = filecon;
+	ast_node->flavor = CIL_FILECON;
+
 	filecon->path_str = parse_current->next->data;
+	/* filecon->path will be NULL if in a macro and the path is an argument */
+	filecon->path = cil_gen_declared_string(db, filecon->path_str, ast_node);
 
 	if (type == CIL_KEY_ANY) {
 		filecon->type = CIL_FILECON_ANY;
@@ -4266,14 +4184,12 @@ int cil_gen_filecon(struct cil_db *db, struct cil_tree_node *parse_current, stru
 		}
 	}
 
-	ast_node->data = filecon;
-	ast_node->flavor = CIL_FILECON;
-
 	return SEPOL_OK;
 
 exit:
 	cil_tree_log(parse_current, CIL_ERR, "Bad filecon declaration");
 	cil_destroy_filecon(filecon);
+	cil_clear_node(ast_node);
 	return rc;
 }
 
@@ -4500,25 +4416,41 @@ int cil_gen_nodecon(struct cil_db *db, struct cil_tree_node *parse_current, stru
 
 	cil_nodecon_init(&nodecon);
 
-	if (parse_current->next->cl_head == NULL ) {
-		nodecon->addr_str = parse_current->next->data;
-	} else {
+	if (parse_current->next->cl_head) {
 		cil_ipaddr_init(&nodecon->addr);
-
 		rc = cil_fill_ipaddr(parse_current->next->cl_head, nodecon->addr);
 		if (rc != SEPOL_OK) {
 			goto exit;
 		}
+	} else {
+		char *addr = parse_current->next->data;
+		if (strchr(addr, ':') || (strchr(addr, '.') && isdigit(addr[0]))) {
+			cil_ipaddr_init(&nodecon->addr);
+			rc = cil_fill_ipaddr(parse_current->next, nodecon->addr);
+			if (rc != SEPOL_OK) {
+				goto exit;
+			}
+		} else {
+			nodecon->addr_str = addr;
+		}
 	}
 
-	if (parse_current->next->next->cl_head == NULL ) {
-		nodecon->mask_str = parse_current->next->next->data;
-	} else {
+	if (parse_current->next->next->cl_head) {
 		cil_ipaddr_init(&nodecon->mask);
-
 		rc = cil_fill_ipaddr(parse_current->next->next->cl_head, nodecon->mask);
 		if (rc != SEPOL_OK) {
 			goto exit;
+		}
+	} else {
+		char *mask = parse_current->next->next->data;
+		if (strchr(mask, ':') || (strchr(mask, '.') && isdigit(mask[0]))) {
+			cil_ipaddr_init(&nodecon->mask);
+			rc = cil_fill_ipaddr(parse_current->next->next, nodecon->mask);
+			if (rc != SEPOL_OK) {
+				goto exit;
+			}
+		} else {
+			nodecon->mask_str = mask;
 		}
 	}
 
@@ -5320,9 +5252,9 @@ int cil_gen_macro(struct cil_db *db, struct cil_tree_node *parse_current, struct
 		} else if (kind == CIL_KEY_BOOL) {
 			param->flavor = CIL_BOOL;
 		} else if (kind == CIL_KEY_STRING) {
-			param->flavor = CIL_NAME;
+			param->flavor = CIL_DECLARED_STRING;
 		} else if (kind == CIL_KEY_NAME) {
-			param->flavor = CIL_NAME;
+			param->flavor = CIL_DECLARED_STRING;
 		} else {
 			cil_log(CIL_ERR, "The kind %s is not allowed as a parameter\n",kind);
 			cil_destroy_param(param);
@@ -5462,7 +5394,7 @@ void cil_destroy_args(struct cil_args *args)
 	} else if (args->arg != NULL) {
 		struct cil_tree_node *node = args->arg->nodes->head->data;
 		switch (args->flavor) {
-		case CIL_NAME:
+		case CIL_DECLARED_STRING:
 			break;
 		case CIL_CATSET:
 			cil_destroy_catset((struct cil_catset *)args->arg);
@@ -5697,15 +5629,19 @@ exit:
 int cil_fill_ipaddr(struct cil_tree_node *addr_node, struct cil_ipaddr *addr)
 {
 	int rc = SEPOL_ERR;
+	char *addr_str;
 
 	if (addr_node == NULL || addr_node->data == NULL || addr == NULL) {
 		goto exit;
 	}
 
-	if (strchr(addr_node->data, ':') != NULL) {
+	addr_str = addr_node->data;
+	if (strchr(addr_str, ':')) {
 		addr->family = AF_INET6;
-	} else {
+	} else if (strchr(addr_str, '.') && isdigit(addr_str[0])) {
 		addr->family = AF_INET;
+	} else {
+		goto exit;
 	}
 
 	rc = inet_pton(addr->family, addr_node->data, &addr->ip);
@@ -5717,7 +5653,7 @@ int cil_fill_ipaddr(struct cil_tree_node *addr_node, struct cil_ipaddr *addr)
 	return SEPOL_OK;
 
 exit:
-	cil_log(CIL_ERR, "Bad ip address or netmask: %s\n", (addr_node && addr_node->data) ? (const char *)addr_node->data : "n/a");
+	cil_log(CIL_ERR, "Bad ip address or netmask: %s\n", (addr_node && addr_node->data) ? (const char *)addr_node->data : "NULL");
 	return rc;
 }
 
@@ -6256,7 +6192,7 @@ static struct cil_tree_node * parse_statement(struct cil_db *db, struct cil_tree
 	} else if (parse_current->data == CIL_KEY_CLASS) {
 		rc = cil_gen_class(db, parse_current, new_ast_node);
 	} else if (parse_current->data == CIL_KEY_CLASSORDER) {
-		rc = cil_gen_classorder(db, parse_current, new_ast_node);
+		rc = cil_gen_ordered(db, parse_current, new_ast_node, CIL_CLASSORDER);
 	} else if (parse_current->data == CIL_KEY_MAP_CLASS) {
 		rc = cil_gen_map_class(db, parse_current, new_ast_node);
 	} else if (parse_current->data == CIL_KEY_CLASSMAPPING) {
@@ -6274,7 +6210,7 @@ static struct cil_tree_node * parse_statement(struct cil_db *db, struct cil_tree
 	} else if (parse_current->data == CIL_KEY_SIDCONTEXT) {
 		rc = cil_gen_sidcontext(db, parse_current, new_ast_node);
 	} else if (parse_current->data == CIL_KEY_SIDORDER) {
-		rc = cil_gen_sidorder(db, parse_current, new_ast_node);
+		rc = cil_gen_ordered(db, parse_current, new_ast_node, CIL_SIDORDER);
 	} else if (parse_current->data == CIL_KEY_USER) {
 		rc = cil_gen_user(db, parse_current, new_ast_node);
 	} else if (parse_current->data == CIL_KEY_USERATTRIBUTE) {
@@ -6365,6 +6301,8 @@ static struct cil_tree_node * parse_statement(struct cil_db *db, struct cil_tree
 		rc = cil_gen_avrulex(parse_current, new_ast_node, CIL_AVRULE_NEVERALLOW);
 	} else if (parse_current->data == CIL_KEY_PERMISSIONX) {
 		rc = cil_gen_permissionx(db, parse_current, new_ast_node);
+	} else if (parse_current->data == CIL_KEY_DENY_RULE) {
+		rc = cil_gen_deny_rule(parse_current, new_ast_node);
 	} else if (parse_current->data == CIL_KEY_TYPETRANSITION) {
 		rc = cil_gen_typetransition(db, parse_current, new_ast_node);
 	} else if (parse_current->data == CIL_KEY_TYPECHANGE) {
@@ -6386,9 +6324,9 @@ static struct cil_tree_node * parse_statement(struct cil_db *db, struct cil_tree
 	} else if (parse_current->data == CIL_KEY_CATSET) {
 		rc = cil_gen_catset(db, parse_current, new_ast_node);
 	} else if (parse_current->data == CIL_KEY_CATORDER) {
-		rc = cil_gen_catorder(db, parse_current, new_ast_node);
+		rc = cil_gen_ordered(db, parse_current, new_ast_node, CIL_CATORDER);
 	} else if (parse_current->data == CIL_KEY_SENSITIVITYORDER) {
-		rc = cil_gen_sensitivityorder(db, parse_current, new_ast_node);
+		rc = cil_gen_ordered(db, parse_current, new_ast_node, CIL_SENSITIVITYORDER);
 	} else if (parse_current->data == CIL_KEY_SENSCAT) {
 		rc = cil_gen_senscat(db, parse_current, new_ast_node);
 	} else if (parse_current->data == CIL_KEY_LEVEL) {

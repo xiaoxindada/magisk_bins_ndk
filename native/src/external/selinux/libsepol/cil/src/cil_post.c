@@ -47,9 +47,12 @@
 #include "cil_policy.h"
 #include "cil_verify.h"
 #include "cil_symtab.h"
+#include "cil_deny.h"
 
 #define GEN_REQUIRE_ATTR "cil_gen_require" /* Also in libsepol/src/module_to_cil.c */
 #define TYPEATTR_INFIX "_typeattr_"        /* Also in libsepol/src/module_to_cil.c */
+
+#define spaceship_cmp(a, b) (((a) > (b)) - ((a) < (b)))
 
 struct fc_data {
 	unsigned int meta;
@@ -212,12 +215,16 @@ int cil_post_filecon_compare(const void *a, const void *b)
 	struct cil_filecon *b_filecon = *(struct cil_filecon**)b;
 	struct fc_data *a_data = cil_malloc(sizeof(*a_data));
 	struct fc_data *b_data = cil_malloc(sizeof(*b_data));
-	char *a_path = cil_malloc(strlen(a_filecon->path_str) + 1);
-	char *b_path = cil_malloc(strlen(b_filecon->path_str) + 1);
+	char *a_path_str, *a_path, *b_path_str, *b_path;
+
+	a_path_str = a_filecon->path ? DATUM(a_filecon->path)->fqn : a_filecon->path_str;
+	b_path_str = b_filecon->path ? DATUM(b_filecon->path)->fqn : b_filecon->path_str;
+	a_path = cil_malloc(strlen(a_path_str) + 1);
+	b_path = cil_malloc(strlen(b_path_str) + 1);
 	a_path[0] = '\0';
 	b_path[0] = '\0';
-	strcat(a_path, a_filecon->path_str);
-	strcat(b_path, b_filecon->path_str);
+	strcat(a_path, a_path_str);
+	strcat(b_path, b_path_str);
 	cil_post_fc_fill_data(a_data, a_path);
 	cil_post_fc_fill_data(b_data, b_path);
 	if (a_data->meta && !b_data->meta) {
@@ -237,7 +244,7 @@ int cil_post_filecon_compare(const void *a, const void *b)
 	} else if (b_filecon->type < a_filecon->type) {
 		rc = 1;
 	} else {
-		rc = strcmp(a_filecon->path_str, b_filecon->path_str);
+		rc = strcmp(a_path_str, b_path_str);
 	}
 
 	free(a_path);
@@ -258,8 +265,8 @@ int cil_post_ibpkeycon_compare(const void *a, const void *b)
 	if (rc)
 		return rc;
 
-	rc = (aibpkeycon->pkey_high - aibpkeycon->pkey_low)
-		- (bibpkeycon->pkey_high - bibpkeycon->pkey_low);
+	rc = spaceship_cmp(aibpkeycon->pkey_high - aibpkeycon->pkey_low,
+		bibpkeycon->pkey_high - bibpkeycon->pkey_low);
 	if (rc == 0) {
 		if (aibpkeycon->pkey_low < bibpkeycon->pkey_low)
 			rc = -1;
@@ -276,8 +283,8 @@ int cil_post_portcon_compare(const void *a, const void *b)
 	struct cil_portcon *aportcon = *(struct cil_portcon**)a;
 	struct cil_portcon *bportcon = *(struct cil_portcon**)b;
 
-	rc = (aportcon->port_high - aportcon->port_low) 
-		- (bportcon->port_high - bportcon->port_low);
+	rc = spaceship_cmp(aportcon->port_high - aportcon->port_low,
+		bportcon->port_high - bportcon->port_low);
 	if (rc == 0) {
 		if (aportcon->port_low < bportcon->port_low) {
 			rc = -1;
@@ -389,8 +396,8 @@ static int cil_post_iomemcon_compare(const void *a, const void *b)
 	struct cil_iomemcon *aiomemcon = *(struct cil_iomemcon**)a;
 	struct cil_iomemcon *biomemcon = *(struct cil_iomemcon**)b;
 
-	rc = (aiomemcon->iomem_high - aiomemcon->iomem_low) 
-		- (biomemcon->iomem_high - biomemcon->iomem_low);
+	rc = spaceship_cmp(aiomemcon->iomem_high - aiomemcon->iomem_low,
+		biomemcon->iomem_high - biomemcon->iomem_low);
 	if (rc == 0) {
 		if (aiomemcon->iomem_low < biomemcon->iomem_low) {
 			rc = -1;
@@ -408,8 +415,8 @@ static int cil_post_ioportcon_compare(const void *a, const void *b)
 	struct cil_ioportcon *aioportcon = *(struct cil_ioportcon**)a;
 	struct cil_ioportcon *bioportcon = *(struct cil_ioportcon**)b;
 
-	rc = (aioportcon->ioport_high - aioportcon->ioport_low) 
-		- (bioportcon->ioport_high - bioportcon->ioport_low);
+	rc = spaceship_cmp(aioportcon->ioport_high - aioportcon->ioport_low,
+		bioportcon->ioport_high - bioportcon->ioport_low);
 	if (rc == 0) {
 		if (aioportcon->ioport_low < bioportcon->ioport_low) {
 			rc = -1;
@@ -1307,6 +1314,8 @@ static int __cil_expr_to_bitmap(struct cil_list *expr, ebitmap_t *out, int max, 
 
 	curr = expr->head;
 	flavor = expr->flavor;
+
+	ebitmap_init(&tmp);
 
 	if (curr->flavor == CIL_OP) {
 		enum cil_flavor op = (enum cil_flavor)(uintptr_t)curr->data;
@@ -2548,6 +2557,12 @@ int cil_post_process(struct cil_db *db)
 	rc = cil_post_db(db);
 	if (rc != SEPOL_OK) {
 		cil_log(CIL_ERR, "Failed post db handling\n");
+		goto exit;
+	}
+
+	rc = cil_process_deny_rules_in_ast(db);
+	if (rc != SEPOL_OK) {
+		cil_log(CIL_ERR, "Failed to process deny rules\n");
 		goto exit;
 	}
 

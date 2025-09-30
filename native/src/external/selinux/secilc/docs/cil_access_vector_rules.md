@@ -1,15 +1,12 @@
 Access Vector Rules
 ===================
 
-allow
------
-
-Specifies the access allowed between a source and target type. Note that access may be refined by constraint rules based on the source, target and class ([`validatetrans`](cil_constraint_statements.md#validatetrans) or [`mlsvalidatetrans`](cil_constraint_statements.md#mlsvalidatetrans)) or source, target class and permissions ([`constrain`](cil_constraint_statements.md#constrain) or [`mlsconstrain`](cil_constraint_statements.md#mlsconstrain) statements).
+Rules involving a source type, a target type, and class permissions or extended permissions.
 
 **Rule definition:**
 
 ```secil
-    (allow source_id target_id|self classpermissionset_id ...)
+    (av_flavor source_id target_id|self|notself|other classpermission_id|permissionx_id)
 ```
 
 **Where:**
@@ -21,9 +18,8 @@ Specifies the access allowed between a source and target type. Note that access 
 </colgroup>
 <tbody>
 <tr class="odd">
-<td align="left"><p><code>allow</code></p></td>
-<td align="left"><p>The <code>allow</code> keyword.</p></td>
-</tr>
+<td align="left"><p><code>av_flavor</code></p></td>
+<td align="left"><p>The flavor of access vector rule. Possible flavors are <code>allow</code>, <code>auditallow</code>, <code>dontaudit</code>, <code>neverallow</code>, <code>deny</code>, <code>allowx</code>, <code>auditallowx</code>, <code>dontauditx</code>, and <code>neverallowx</code>.</p></td>
 <tr class="even">
 <td align="left"><p><code>source_id</code></p></td>
 <td align="left"><p>A single previously defined source <code>type</code>, <code>typealias</code> or <code>typeattribute</code> identifier.</p></td>
@@ -31,14 +27,30 @@ Specifies the access allowed between a source and target type. Note that access 
 <tr class="odd">
 <td align="left"><p><code>target_id</code></p></td>
 <td align="left"><p>A single previously defined target <code>type</code>, <code>typealias</code> or <code>typeattribute</code> identifier.</p>
-<p>The <code>self</code> keyword may be used instead to signify that source and target are the same.</p></td>
+<p> Instead it can be one of the special keywords <code>self</code>, <code>notself</code> or <code>other</code>.</p>
+<p>The <code>self</code> keyword may be used to signify that source and target are the same. If the source is an attribute, each type of the source will be paired with itself as the target. The <code>notself</code> keyword may be used to signify that the target is all types except for the types of the source. The <code>other</code> keyword may be used as a short-hand way of writing a rule for each type of the source where it is paired with all of the other types of the source as the target.</p></td>
 </tr>
 <tr class="even">
-<td align="left"><p><code>classpermissionset_id</code></p></td>
-<td align="left"><p>A single named or anonymous <code>classpermissionset</code> or a single set of <code>classmap</code>/<code>classmapping</code> identifiers.</p></td>
+<td align="left"><p><code>classpermission_id</code></p></td>
+<td align="left"><p>A single named or anonymous <code>classpermissionset</code> or a single set of <code>classmap</code>/<code>classmapping</code> identifiers. Used for <code>allow</code>, <code>auditallow</code>, <code>dontaudit</code>, <code>neverallow</code> rules.</p></td>
+</tr>
+<tr class="odd">
+<td align="left"><p><code>permissionx_id</code></p></td>
+<td align="left"><p>A single named or anonymous <code>permissionx</code>. Used for <code>allowx</code>, <code>auditallowx</code>, <code>dontauditx</code>, <code>neverallowx</code> rules.</p></td>
 </tr>
 </tbody>
 </table>
+
+allow
+-----
+
+Specifies the access allowed between a source and target type. Note that access may be refined by constraint rules based on the source, target and class ([`validatetrans`](cil_constraint_statements.md#validatetrans) or [`mlsvalidatetrans`](cil_constraint_statements.md#mlsvalidatetrans)) or source, target class and permissions ([`constrain`](cil_constraint_statements.md#constrain) or [`mlsconstrain`](cil_constraint_statements.md#mlsconstrain) statements).
+
+**Rule definition:**
+
+```secil
+    (allow source_id target_id|self|notself|other classpermissionset_id ...)
+```
 
 **Examples:**
 
@@ -97,36 +109,8 @@ Audit the access rights defined if there is a valid allow rule. Note: It does NO
 **Rule definition:**
 
 ```secil
-    (auditallow source_id target_id|self classpermissionset_id ...)
+    (auditallow source_id target_id|self|notself|other classpermissionset_id)
 ```
-
-**Where:**
-
-<table>
-<colgroup>
-<col width="29%" />
-<col width="70%" />
-</colgroup>
-<tbody>
-<tr class="odd">
-<td align="left"><p><code>auditallow</code></p></td>
-<td align="left"><p>The <code>auditallow</code> keyword.</p></td>
-</tr>
-<tr class="even">
-<td align="left"><p><code>source_id</code></p></td>
-<td align="left"><p>A single previously defined source <code>type</code>, <code>typealias</code> or <code>typeattribute</code> identifier.</p></td>
-</tr>
-<tr class="odd">
-<td align="left"><p><code>target_id</code></p></td>
-<td align="left"><p>A single previously defined target <code>type</code>, <code>typealias</code> or <code>typeattribute</code> identifier.</p>
-<p>The <code>self</code> keyword may be used instead to signify that source and target are the same.</p></td>
-</tr>
-<tr class="even">
-<td align="left"><p><code>classpermissionset_id</code></p></td>
-<td align="left"><p>A single named or anonymous <code>classpermissionset</code> or a single set of <code>classmap</code>/<code>classmapping</code> identifiers.</p></td>
-</tr>
-</tbody>
-</table>
 
 **Example:**
 
@@ -148,36 +132,8 @@ Note that these rules can be omitted by the CIL compiler command line parameter 
 **Rule definition:**
 
 ```secil
-    (dontaudit source_id target_id|self classpermissionset_id ...)
+    (dontaudit source_id target_id|self|notself|other classpermissionset_id ...)
 ```
-
-**Where:**
-
-<table>
-<colgroup>
-<col width="27%" />
-<col width="72%" />
-</colgroup>
-<tbody>
-<tr class="odd">
-<td align="left"><p><code>dontaudit</code></p></td>
-<td align="left"><p>The <code>dontaudit</code> keyword.</p></td>
-</tr>
-<tr class="even">
-<td align="left"><p><code>source_id</code></p></td>
-<td align="left"><p>A single previously defined source <code>type</code>, <code>typealias</code> or <code>typeattribute</code> identifier.</p></td>
-</tr>
-<tr class="odd">
-<td align="left"><p><code>target_id</code></p></td>
-<td align="left"><p>A single previously defined target <code>type</code>, <code>typealias</code> or <code>typeattribute</code> identifier.</p>
-<p>The <code>self</code> keyword may be used instead to signify that source and target are the same.</p></td>
-</tr>
-<tr class="even">
-<td align="left"><p><code>classpermissionset_id</code></p></td>
-<td align="left"><p>A single named or anonymous <code>classpermissionset</code> or a single set of <code>classmap</code>/<code>classmapping</code> identifiers.</p></td>
-</tr>
-</tbody>
-</table>
 
 **Example:**
 
@@ -197,36 +153,8 @@ Note that these rules can be over-ridden by the CIL compiler command line parame
 **Rule definition:**
 
 ```secil
-    (neverallow source_id target_id|self classpermissionset_id ...)
+    (neverallow source_id target_id|self|notself|other classpermissionset_id ...)
 ```
-
-**Where:**
-
-<table>
-<colgroup>
-<col width="27%" />
-<col width="72%" />
-</colgroup>
-<tbody>
-<tr class="odd">
-<td align="left"><p><code>neverallow</code></p></td>
-<td align="left"><p>The <code>neverallow</code> keyword.</p></td>
-</tr>
-<tr class="even">
-<td align="left"><p><code>source_id</code></p></td>
-<td align="left"><p>A single previously defined source <code>type</code>, <code>typealias</code> or <code>typeattribute</code> identifier.</p></td>
-</tr>
-<tr class="odd">
-<td align="left"><p><code>target_id</code></p></td>
-<td align="left"><p>A single previously defined target <code>type</code>, <code>typealias</code> or <code>typeattribute</code> identifier.</p>
-<p>The <code>self</code> keyword may be used instead to signify that source and target are the same.</p></td>
-</tr>
-<tr class="even">
-<td align="left"><p><code>classpermissionset_id</code></p></td>
-<td align="left"><p>A single named or anonymous <code>classpermissionset</code> or a single set of <code>classmap</code>/<code>classmapping</code> identifiers.</p></td>
-</tr>
-</tbody>
-</table>
 
 **Example:**
 
@@ -247,6 +175,45 @@ This example will not compile as `type_3` is not allowed to be a source type for
         (allow type_3 self (property_service (set)))
     )
 ```
+deny
+----------
+
+Remove the access rights defined from any matching allow rules. These rules are processed before [`neverallow`](cil_access_vector_rules.md#neverallow) checking.
+
+**Rule definition:**
+
+```secil
+    (deny source_id target_id|self classpermissionset_id ...)
+```
+
+**Example:**
+
+```secil
+    (class class1 (perm1 perm2))
+
+    (type type1)
+    (type type2)
+    (allow type1 type2 (class1 (perm1))) ; Allow-1
+    (deny type1 type2 (class1 (perm1)))  ; Deny-1
+    ; Allow-1 will be complete removed by Deny-1.
+
+    (type type3)
+    (type type4)
+    (allow type3 type4 (class1 (perm1 perm2))) ; Allow-2
+    (deny type3 type4 (class1 (perm1)))        ; Deny-2
+    ; Allow-2 will be removed and replaced with the following when Deny-2 is evaluated
+    ; (allow type3 type4 (class1 (perm2)))
+
+    (type type5)
+    (type type6)
+    (typeattribute attr1)
+    (typeattributeset attr1 (type5 type6))
+    (allow attr1 attr1 (class1 (perm1))) ; Allow-3
+    (deny type5 type6 (class1 (perm1)))  ; Deny-3
+    ; Allow-3 will be removed and replaced with the following when Deny-3 is evaluated
+    ; (allow type6 attr1 (class1 (perm1)))
+    ; (allow type5 type5 (class1 (perm1)))
+```
 
 allowx
 ------
@@ -258,36 +225,8 @@ Note that for this to work there must *also* be valid equivalent [`allow`](cil_a
 **Rule definition:**
 
 ```secil
-    (allowx source_id target_id|self permissionx_id)
+    (allowx source_id target_id|self|notself|other permissionx_id)
 ```
-
-**Where:**
-
-<table>
-<colgroup>
-<col width="27%" />
-<col width="72%" />
-</colgroup>
-<tbody>
-<tr class="odd">
-<td align="left"><p><code>allowx</code></p></td>
-<td align="left"><p>The <code>allowx</code> keyword.</p></td>
-</tr>
-<tr class="even">
-<td align="left"><p><code>source_id</code></p></td>
-<td align="left"><p>A single previously defined source <code>type</code>, <code>typealias</code>, or <code>typeattribute</code> identifier.</p></td>
-</tr>
-<tr class="odd">
-<td align="left"><p><code>target_id</code></p></td>
-<td align="left"><p>A single previously defined target <code>type</code>, <code>typealias</code>, or <code>typeattribute</code> identifier.</p>
-<p>The <code>self</code> keyword may be used instead to signify that source and target are the same.</p></td>
-</tr>
-<tr class="even">
-<td align="left"><p><code>permissionx_id</code></p></td>
-<td align="left"><p>A single named or anonymous <code>permissionx</code>.</p></td>
-</tr>
-</tbody>
-</table>
 
 **Examples:**
 
@@ -313,36 +252,8 @@ Note that for this to work there must *also* be valid equivalent [`auditallow`](
 **Rule definition:**
 
 ```secil
-    (auditallowx source_id target_id|self permissionx_id)
+    (auditallowx source_id target_id|self|notself|other permissionx_id)
 ```
-
-**Where:**
-
-<table>
-<colgroup>
-<col width="27%" />
-<col width="72%" />
-</colgroup>
-<tbody>
-<tr class="odd">
-<td align="left"><p><code>auditallowx</code></p></td>
-<td align="left"><p>The <code>auditallowx</code> keyword.</p></td>
-</tr>
-<tr class="even">
-<td align="left"><p><code>source_id</code></p></td>
-<td align="left"><p>A single previously defined source <code>type</code>, <code>typealias</code> or <code>typeattribute</code> identifier.</p></td>
-</tr>
-<tr class="odd">
-<td align="left"><p><code>target_id</code></p></td>
-<td align="left"><p>A single previously defined target <code>type</code>, <code>typealias</code> or <code>typeattribute</code> identifier.</p>
-<p>The <code>self</code> keyword may be used instead to signify that source and target are the same.</p></td>
-</tr>
-<tr class="even">
-<td align="left"><p><code>permissionx_id</code></p></td>
-<td align="left"><p>A single named or anonymous <code>permissionx</code>.</p></td>
-</tr>
-</tbody>
-</table>
 
 **Examples:**
 
@@ -367,36 +278,8 @@ Note that these rules can be omitted by the CIL compiler command line parameter 
 **Rule definition:**
 
 ```secil
-    (dontauditx source_id target_id|self permissionx_id)
+    (dontauditx source_id target_id|self|notself|other permissionx_id)
 ```
-
-**Where:**
-
-<table>
-<colgroup>
-<col width="27%" />
-<col width="72%" />
-</colgroup>
-<tbody>
-<tr class="odd">
-<td align="left"><p><code>dontauditx</code></p></td>
-<td align="left"><p>The <code>dontauditx</code> keyword.</p></td>
-</tr>
-<tr class="even">
-<td align="left"><p><code>source_id</code></p></td>
-<td align="left"><p>A single previously defined source <code>type</code>, <code>typealias</code> or <code>typeattribute</code> identifier.</p></td>
-</tr>
-<tr class="odd">
-<td align="left"><p><code>target_id</code></p></td>
-<td align="left"><p>A single previously defined target <code>type</code>, <code>typealias</code> or <code>typeattribute</code> identifier.</p>
-<p>The <code>self</code> keyword may be used instead to signify that source and target are the same.</p></td>
-</tr>
-<tr class="even">
-<td align="left"><p><code>permissionx_id</code></p></td>
-<td align="left"><p>A single named or anonymous <code>permissionx</code>.</p></td>
-</tr>
-</tbody>
-</table>
 
 **Examples:**
 
@@ -416,36 +299,8 @@ Note that these rules can be over-ridden by the CIL compiler command line parame
 **Rule definition:**
 
 ```secil
-    (neverallowx source_id target_id|self permissionx_id)
+    (neverallowx source_id target_id|self|notself|other permissionx_id)
 ```
-
-**Where:**
-
-<table>
-<colgroup>
-<col width="27%" />
-<col width="72%" />
-</colgroup>
-<tbody>
-<tr class="odd">
-<td align="left"><p><code>neverallowx</code></p></td>
-<td align="left"><p>The <code>neverallowx</code> keyword.</p></td>
-</tr>
-<tr class="even">
-<td align="left"><p><code>source_id</code></p></td>
-<td align="left"><p>A single previously defined source <code>type</code>, <code>typealias</code> or <code>typeattribute</code> identifier.</p></td>
-</tr>
-<tr class="odd">
-<td align="left"><p><code>target_id</code></p></td>
-<td align="left"><p>A single previously defined target <code>type</code>, <code>typealias</code> or <code>typeattribute</code> identifier.</p>
-<p>The <code>self</code> keyword may be used instead to signify that source and target are the same.</p></td>
-</tr>
-<tr class="even">
-<td align="left"><p><code>permissionx_id</code></p></td>
-<td align="left"><p>A single named or anonymous <code>permissionx</code>.</p></td>
-</tr>
-</tbody>
-</table>
 
 **Examples:**
 

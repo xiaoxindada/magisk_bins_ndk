@@ -943,10 +943,10 @@ int mls_semantic_level_expand(mls_semantic_level_t * sl, mls_level_t * l,
 		return -1;
 	}
 	for (cat = sl->cat; cat; cat = cat->next) {
-		if (cat->low > cat->high) {
+		if (!cat->low || cat->low > cat->high) {
 			ERR(h, "Category range is not valid %s.%s",
-			    p->p_cat_val_to_name[cat->low - 1],
-			    p->p_cat_val_to_name[cat->high - 1]);
+			    cat->low > 0 ? p->p_cat_val_to_name[cat->low - 1] : "Invalid",
+			    cat->high > 0 ? p->p_cat_val_to_name[cat->high - 1] : "Invalid");
 			return -1;
 		}
 		for (i = cat->low - 1; i < cat->high; i++) {
@@ -1106,11 +1106,11 @@ static int bool_copy_callback(hashtab_key_t key, hashtab_datum_t datum,
 {
 	int ret;
 	expand_state_t *state;
-	cond_bool_datum_t *bool, *new_bool;
+	cond_bool_datum_t *boolean, *new_bool;
 	char *id, *new_id;
 
 	id = key;
-	bool = (cond_bool_datum_t *) datum;
+	boolean = (cond_bool_datum_t *) datum;
 	state = (expand_state_t *) data;
 
 	if (!is_id_enabled(id, state->base, SYM_BOOLS)) {
@@ -1118,7 +1118,7 @@ static int bool_copy_callback(hashtab_key_t key, hashtab_datum_t datum,
 		return 0;
 	}
 
-	if (bool->flags & COND_BOOL_FLAGS_TUNABLE) {
+	if (boolean->flags & COND_BOOL_FLAGS_TUNABLE) {
 		/* Skip tunables */
 		return 0;
 	}
@@ -1152,10 +1152,10 @@ static int bool_copy_callback(hashtab_key_t key, hashtab_datum_t datum,
 		return -1;
 	}
 
-	state->boolmap[bool->s.value - 1] = new_bool->s.value;
+	state->boolmap[boolean->s.value - 1] = new_bool->s.value;
 
-	new_bool->state = bool->state;
-	new_bool->flags = bool->flags;
+	new_bool->state = boolean->state;
+	new_bool->flags = boolean->flags;
 
 	return 0;
 }
@@ -1821,6 +1821,9 @@ static int allocate_xperms(sepol_handle_t * handle, avtab_datum_t * avdatump,
 	case AVRULE_XPERMS_IOCTLDRIVER:
 		xperms->specified = AVTAB_XPERMS_IOCTLDRIVER;
 		break;
+	case AVRULE_XPERMS_NLMSG:
+		xperms->specified = AVTAB_XPERMS_NLMSG;
+		break;
 	default:
 		return -1;
 	}
@@ -2025,8 +2028,8 @@ static int cond_node_map_bools(expand_state_t * state, cond_node_t * cn)
 
 	cur = cn->expr;
 	while (cur) {
-		if (cur->bool)
-			cur->bool = state->boolmap[cur->bool - 1];
+		if (cur->boolean)
+			cur->boolean = state->boolmap[cur->boolean - 1];
 		cur = cur->next;
 	}
 
@@ -2350,7 +2353,7 @@ static int type_attr_map(hashtab_key_t key
 	policydb_t *p = state->out;
 	unsigned int i;
 	ebitmap_node_t *tnode;
-	int value;
+	uint32_t value;
 
 	type = (type_datum_t *) datum;
 	value = type->s.value;
@@ -2899,7 +2902,7 @@ static void discard_tunables(sepol_handle_t *sh, policydb_t *pol)
 			     cur_expr = cur_expr->next) {
 				if (cur_expr->expr_type != COND_BOOL)
 					continue;
-				booldatum = pol->bool_val_to_struct[cur_expr->bool - 1];
+				booldatum = pol->bool_val_to_struct[cur_expr->boolean - 1];
 				if (booldatum->flags & COND_BOOL_FLAGS_TUNABLE)
 					tmp[tunables++] = booldatum;
 				else
@@ -2993,6 +2996,10 @@ int expand_module(sepol_handle_t * handle,
 	state.out->policyvers = POLICYDB_VERSION_MAX;
 	if (state.base->name) {
 		state.out->name = strdup(state.base->name);
+		if (!state.out->name) {
+			ERR(handle, "Out of memory!");
+			goto cleanup;
+		}
 	}
 
 	/* Copy mls state from base to out */

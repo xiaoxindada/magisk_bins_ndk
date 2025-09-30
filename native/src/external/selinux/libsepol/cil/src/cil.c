@@ -84,6 +84,8 @@ char *CIL_KEY_CONS_INCOMP;
 char *CIL_KEY_CONDTRUE;
 char *CIL_KEY_CONDFALSE;
 char *CIL_KEY_SELF;
+char *CIL_KEY_NOTSELF;
+char *CIL_KEY_OTHER;
 char *CIL_KEY_OBJECT_R;
 char *CIL_KEY_STAR;
 char *CIL_KEY_TCP;
@@ -219,12 +221,14 @@ char *CIL_KEY_DONTAUDITX;
 char *CIL_KEY_NEVERALLOWX;
 char *CIL_KEY_PERMISSIONX;
 char *CIL_KEY_IOCTL;
+char *CIL_KEY_NLMSG;
 char *CIL_KEY_UNORDERED;
 char *CIL_KEY_SRC_INFO;
 char *CIL_KEY_SRC_CIL;
 char *CIL_KEY_SRC_HLL_LMS;
 char *CIL_KEY_SRC_HLL_LMX;
 char *CIL_KEY_SRC_HLL_LME;
+char *CIL_KEY_DENY_RULE;
 
 static void cil_init_keys(void)
 {
@@ -253,6 +257,8 @@ static void cil_init_keys(void)
 	CIL_KEY_CONDTRUE = cil_strpool_add("true");
 	CIL_KEY_CONDFALSE = cil_strpool_add("false");
 	CIL_KEY_SELF = cil_strpool_add("self");
+	CIL_KEY_NOTSELF = cil_strpool_add("notself");
+	CIL_KEY_OTHER = cil_strpool_add("other");
 	CIL_KEY_OBJECT_R = cil_strpool_add("object_r");
 	CIL_KEY_STAR = cil_strpool_add("*");
 	CIL_KEY_UDP = cil_strpool_add("udp");
@@ -388,12 +394,14 @@ static void cil_init_keys(void)
 	CIL_KEY_NEVERALLOWX = cil_strpool_add("neverallowx");
 	CIL_KEY_PERMISSIONX = cil_strpool_add("permissionx");
 	CIL_KEY_IOCTL = cil_strpool_add("ioctl");
+	CIL_KEY_NLMSG = cil_strpool_add("nlmsg");
 	CIL_KEY_UNORDERED = cil_strpool_add("unordered");
 	CIL_KEY_SRC_INFO = cil_strpool_add("<src_info>");
 	CIL_KEY_SRC_CIL = cil_strpool_add("cil");
 	CIL_KEY_SRC_HLL_LMS = cil_strpool_add("lms");
 	CIL_KEY_SRC_HLL_LMX = cil_strpool_add("lmx");
 	CIL_KEY_SRC_HLL_LME = cil_strpool_add("lme");
+	CIL_KEY_DENY_RULE = cil_strpool_add("deny");
 }
 
 void cil_db_init(struct cil_db **db)
@@ -425,11 +433,17 @@ void cil_db_init(struct cil_db **db)
 	cil_sort_init(&(*db)->fsuse);
 	cil_list_init(&(*db)->userprefixes, CIL_LIST_ITEM);
 	cil_list_init(&(*db)->selinuxusers, CIL_LIST_ITEM);
-	cil_list_init(&(*db)->names, CIL_LIST_ITEM);
+	cil_list_init(&(*db)->declared_strings, CIL_LIST_ITEM);
 
 	cil_type_init(&(*db)->selftype);
 	(*db)->selftype->datum.name = CIL_KEY_SELF;
 	(*db)->selftype->datum.fqn = CIL_KEY_SELF;
+	cil_type_init(&(*db)->notselftype);
+	(*db)->notselftype->datum.name = CIL_KEY_NOTSELF;
+	(*db)->notselftype->datum.fqn = CIL_KEY_NOTSELF;
+	cil_type_init(&(*db)->othertype);
+	(*db)->othertype->datum.name = CIL_KEY_OTHER;
+	(*db)->othertype->datum.fqn = CIL_KEY_OTHER;
 	(*db)->num_types_and_attrs = 0;
 	(*db)->num_classes = 0;
 	(*db)->num_types = 0;
@@ -451,6 +465,18 @@ void cil_db_init(struct cil_db **db)
 	(*db)->qualified_names = CIL_FALSE;
 	(*db)->target_platform = SEPOL_TARGET_SELINUX;
 	(*db)->policy_version = POLICYDB_VERSION_MAX;
+}
+
+static void cil_declared_strings_list_destroy(struct cil_list **strings)
+{
+	struct cil_list_item *i;
+
+	cil_list_for_each(i, *strings) {
+		struct cil_symtab_datum *d = i->data;
+		cil_symtab_datum_destroy(d);
+		free(d);
+	}
+	cil_list_destroy(strings, CIL_FALSE);
 }
 
 void cil_db_destroy(struct cil_db **db)
@@ -480,9 +506,12 @@ void cil_db_destroy(struct cil_db **db)
 	cil_sort_destroy(&(*db)->fsuse);
 	cil_list_destroy(&(*db)->userprefixes, CIL_FALSE);
 	cil_list_destroy(&(*db)->selinuxusers, CIL_FALSE);
-	cil_list_destroy(&(*db)->names, CIL_TRUE);
+
+	cil_declared_strings_list_destroy(&(*db)->declared_strings);
 
 	cil_destroy_type((*db)->selftype);
+	cil_destroy_type((*db)->notselftype);
+	cil_destroy_type((*db)->othertype);
 
 	cil_strpool_destroy();
 	free((*db)->val_to_type);
@@ -673,6 +702,56 @@ exit:
 	return rc;
 }
 
+int cil_write_post_ast(FILE *out, cil_db_t *db)
+{
+	int rc = SEPOL_ERR;
+
+	if (db == NULL) {
+		goto exit;
+	}
+
+	cil_log(CIL_INFO, "Building AST from Parse Tree\n");
+	rc = cil_build_ast(db, db->parse->root, db->ast->root);
+	if (rc != SEPOL_OK) {
+		cil_log(CIL_ERR, "Failed to build ast\n");
+		goto exit;
+	}
+
+	cil_log(CIL_INFO, "Destroying Parse Tree\n");
+	cil_tree_destroy(&db->parse);
+
+	cil_log(CIL_INFO, "Resolving AST\n");
+	rc = cil_resolve_ast(db, db->ast->root);
+	if (rc != SEPOL_OK) {
+		cil_log(CIL_ERR, "Failed to resolve ast\n");
+		goto exit;
+	}
+
+	cil_log(CIL_INFO, "Qualifying Names\n");
+	rc = cil_fqn_qualify(db->ast->root);
+	if (rc != SEPOL_OK) {
+		cil_log(CIL_ERR, "Failed to qualify names\n");
+		goto exit;
+	}
+
+	cil_log(CIL_INFO, "Compile post process\n");
+	rc = cil_post_process(db);
+	if (rc != SEPOL_OK ) {
+		cil_log(CIL_ERR, "Post process failed\n");
+		goto exit;
+	}
+
+	cil_log(CIL_INFO, "Writing Post AST\n");
+	rc = cil_write_ast(out, CIL_WRITE_AST_PHASE_POST, db->ast->root);
+	if (rc != SEPOL_OK) {
+		cil_log(CIL_ERR, "Failed to write post ast\n");
+		goto exit;
+	}
+
+exit:
+	return rc;
+}
+
 int cil_build_policydb(cil_db_t *db, sepol_policydb_t **sepol_db)
 {
 	int rc;
@@ -773,7 +852,7 @@ void cil_destroy_data(void **data, enum cil_flavor flavor)
 		cil_destroy_class(*data);
 		break;
 	case CIL_CLASSORDER:
-		cil_destroy_classorder(*data);
+		cil_destroy_ordered(*data);
 		break;
 	case CIL_CLASSPERMISSION:
 		cil_destroy_classpermission(*data);
@@ -870,7 +949,7 @@ void cil_destroy_data(void **data, enum cil_flavor flavor)
 		cil_destroy_aliasactual(*data);
 		break;
 	case CIL_SENSITIVITYORDER:
-		cil_destroy_sensitivityorder(*data);
+		cil_destroy_ordered(*data);
 		break;
 	case CIL_SENSCAT:
 		cil_destroy_senscat(*data);
@@ -888,7 +967,7 @@ void cil_destroy_data(void **data, enum cil_flavor flavor)
 		cil_destroy_aliasactual(*data);
 		break;
 	case CIL_CATORDER:
-		cil_destroy_catorder(*data);
+		cil_destroy_ordered(*data);
 		break;
 	case CIL_LEVEL:
 		cil_destroy_level(*data);
@@ -900,10 +979,7 @@ void cil_destroy_data(void **data, enum cil_flavor flavor)
 		cil_destroy_sid(*data);
 		break;
 	case CIL_SIDORDER:
-		cil_destroy_sidorder(*data);
-		break;
-	case CIL_NAME:
-		cil_destroy_name(*data);
+		cil_destroy_ordered(*data);
 		break;
 	case CIL_ROLEALLOW:
 		cil_destroy_roleallow(*data);
@@ -914,6 +990,9 @@ void cil_destroy_data(void **data, enum cil_flavor flavor)
 		break;
 	case CIL_PERMISSIONX:
 		cil_destroy_permissionx(*data);
+		break;
+	case CIL_DENY_RULE:
+		cil_destroy_deny_rule(*data);
 		break;
 	case CIL_ROLETRANSITION:
 		cil_destroy_roletransition(*data);
@@ -942,6 +1021,8 @@ void cil_destroy_data(void **data, enum cil_flavor flavor)
 		break;
 	case CIL_IPADDR:
 		cil_destroy_ipaddr(*data);
+		break;
+	case CIL_DECLARED_STRING:
 		break;
 	case CIL_SIDCONTEXT:
 		cil_destroy_sidcontext(*data);
@@ -1084,8 +1165,8 @@ int cil_flavor_to_symtab_index(enum cil_flavor flavor, enum cil_sym_index *sym_i
 	case CIL_SID:
 		*sym_index = CIL_SYM_SIDS;
 		break;
-	case CIL_NAME:
-		*sym_index = CIL_SYM_NAMES;
+	case CIL_DECLARED_STRING:
+		*sym_index = CIL_SYM_STRINGS;
 		break;
 	case CIL_CONTEXT:
 		*sym_index = CIL_SYM_CONTEXTS;
@@ -1118,7 +1199,7 @@ const char * cil_node_to_string(struct cil_tree_node *node)
 	case CIL_NODE:
 		return CIL_KEY_NODE;
 	case CIL_STRING:
-		return "string";
+		return CIL_KEY_STRING;
 	case CIL_DATUM:
 		return "<datum>";
 	case CIL_LIST:
@@ -1257,8 +1338,6 @@ const char * cil_node_to_string(struct cil_tree_node *node)
 		return CIL_KEY_SID;
 	case CIL_SIDORDER:
 		return CIL_KEY_SIDORDER;
-	case CIL_NAME:
-		return CIL_KEY_NAME;
 	case CIL_ROLEALLOW:
 		return CIL_KEY_ROLEALLOW;
 	case CIL_AVRULE:
@@ -1291,6 +1370,8 @@ const char * cil_node_to_string(struct cil_tree_node *node)
 		break;
 	case CIL_PERMISSIONX:
 		return CIL_KEY_PERMISSIONX;
+	case CIL_DENY_RULE:
+		return CIL_KEY_DENY_RULE;
 	case CIL_ROLETRANSITION:
 		return CIL_KEY_ROLETRANSITION;
 	case CIL_TYPE_RULE:
@@ -1727,8 +1808,8 @@ int cil_filecons_to_string(struct cil_db *db, char **out, size_t *size)
 	for (i = 0; i < filecons->count; i++) {
 		struct cil_filecon *filecon = filecons->array[i];
 		struct cil_context *ctx = filecon->context;
-
-		str_len += strlen(filecon->path_str);
+		char *path_str = filecon->path ? DATUM(filecon->path)->fqn : filecon->path_str;
+		str_len += strlen(path_str);
 
 		if (filecon->type != CIL_FILECON_ANY) {
 			/* If a type is specified,
@@ -1766,8 +1847,8 @@ int cil_filecons_to_string(struct cil_db *db, char **out, size_t *size)
 		struct cil_filecon *filecon = filecons->array[i];
 		struct cil_context *ctx = filecon->context;
 		const char *str_type = NULL;
-
-		buf_pos = sprintf(str_tmp, "%s", filecon->path_str);
+		char *path_str = filecon->path ? DATUM(filecon->path)->fqn : filecon->path_str;
+		buf_pos = sprintf(str_tmp, "%s", path_str);
 		str_tmp += buf_pos;
 
 		switch(filecon->type) {
@@ -2095,6 +2176,14 @@ void cil_sort_destroy(struct cil_sort **sort)
 	*sort = NULL;
 }
 
+void cil_ordered_init(struct cil_ordered **ordered)
+{
+	*ordered = cil_malloc(sizeof(**ordered));
+	(*ordered)->merged = CIL_FALSE;
+	(*ordered)->strs = NULL;
+	(*ordered)->datums = NULL;
+}
+
 void cil_netifcon_init(struct cil_netifcon **netifcon)
 {
 	*netifcon = cil_malloc(sizeof(**netifcon));
@@ -2188,6 +2277,7 @@ void cil_blockabstract_init(struct cil_blockabstract **abstract)
 {
 	*abstract = cil_malloc(sizeof(**abstract));
 	(*abstract)->block_str = NULL;
+	(*abstract)->block = NULL;
 }
 
 void cil_in_init(struct cil_in **in)
@@ -2197,6 +2287,7 @@ void cil_in_init(struct cil_in **in)
 	cil_symtab_array_init((*in)->symtab, cil_sym_sizes[CIL_SYM_ARRAY_IN]);
 	(*in)->is_after = CIL_FALSE;
 	(*in)->block_str = NULL;
+	(*in)->block = NULL;
 }
 
 void cil_class_init(struct cil_class **class)
@@ -2212,19 +2303,14 @@ void cil_class_init(struct cil_class **class)
 	(*class)->ordered = CIL_FALSE;
 }
 
-void cil_classorder_init(struct cil_classorder **classorder)
-{
-	*classorder = cil_malloc(sizeof(**classorder));
-
-	(*classorder)->class_list_str = NULL;
-}
-
 void cil_classcommon_init(struct cil_classcommon **classcommon)
 {
 	*classcommon = cil_malloc(sizeof(**classcommon));
 
 	(*classcommon)->class_str = NULL;
+	(*classcommon)->class = NULL;
 	(*classcommon)->common_str = NULL;
+	(*classcommon)->common = NULL;
 }
 
 void cil_sid_init(struct cil_sid **sid)
@@ -2242,15 +2328,9 @@ void cil_sidcontext_init(struct cil_sidcontext **sidcontext)
 	*sidcontext = cil_malloc(sizeof(**sidcontext));
 
 	(*sidcontext)->sid_str = NULL;
+	(*sidcontext)->sid = NULL;
 	(*sidcontext)->context_str = NULL;
 	(*sidcontext)->context = NULL;
-}
-
-void cil_sidorder_init(struct cil_sidorder **sidorder)
-{
-	*sidorder = cil_malloc(sizeof(**sidorder));
-
-	(*sidorder)->sid_list_str = NULL;
 }
 
 void cil_userrole_init(struct cil_userrole **userrole)
@@ -2308,6 +2388,7 @@ void cil_roleattributeset_init(struct cil_roleattributeset **attrset)
 	*attrset = cil_malloc(sizeof(**attrset));
 
 	(*attrset)->attr_str = NULL;
+	(*attrset)->attr = NULL;
 	(*attrset)->str_expr = NULL;
 	(*attrset)->datum_expr = NULL;
 }
@@ -2329,6 +2410,7 @@ void cil_typeattributeset_init(struct cil_typeattributeset **attrset)
 	*attrset = cil_malloc(sizeof(**attrset));
 
 	(*attrset)->attr_str = NULL;
+	(*attrset)->attr = NULL;
 	(*attrset)->str_expr = NULL;
 	(*attrset)->datum_expr = NULL;
 }
@@ -2356,7 +2438,9 @@ void cil_aliasactual_init(struct cil_aliasactual **aliasactual)
 	*aliasactual = cil_malloc(sizeof(**aliasactual));
 
 	(*aliasactual)->alias_str = NULL;
+	(*aliasactual)->alias = NULL;
 	(*aliasactual)->actual_str = NULL;
+	(*aliasactual)->actual = NULL;
 }
 
 void cil_typepermissive_init(struct cil_typepermissive **typeperm)
@@ -2365,14 +2449,6 @@ void cil_typepermissive_init(struct cil_typepermissive **typeperm)
 
 	(*typeperm)->type_str = NULL;
 	(*typeperm)->type = NULL;
-}
-
-void cil_name_init(struct cil_name **name)
-{
-	*name = cil_malloc(sizeof(**name));
-
-	cil_symtab_datum_init(&(*name)->datum);
-	(*name)->name_str = NULL;
 }
 
 void cil_nametypetransition_init(struct cil_nametypetransition **nametypetrans)
@@ -2470,6 +2546,17 @@ void cil_permissionx_init(struct cil_permissionx **permx)
 	(*permx)->perms = NULL;
 }
 
+void cil_deny_rule_init(struct cil_deny_rule **rule)
+{
+	*rule = cil_malloc(sizeof(**rule));
+
+	(*rule)->src_str = NULL;
+	(*rule)->src = NULL;
+	(*rule)->tgt_str = NULL;
+	(*rule)->tgt = NULL;
+	(*rule)->classperms = NULL;
+}
+
 void cil_type_rule_init(struct cil_type_rule **type_rule)
 {
 	*type_rule = cil_malloc(sizeof(**type_rule));
@@ -2522,6 +2609,7 @@ void cil_senscat_init(struct cil_senscat **senscat)
 	*senscat = cil_malloc(sizeof(**senscat));
 
 	(*senscat)->sens_str = NULL;
+	(*senscat)->sens = NULL;
 	(*senscat)->cats = NULL;
 }
 
@@ -2692,6 +2780,7 @@ void cil_classpermissionset_init(struct cil_classpermissionset **cps)
 	*cps = cil_malloc(sizeof(**cps));
 
 	(*cps)->set_str = NULL;
+	(*cps)->set = NULL;
 	(*cps)->classperms = NULL;
 }
 
@@ -2716,7 +2805,9 @@ void cil_classmapping_init(struct cil_classmapping **mapping)
 	*mapping = cil_malloc(sizeof(**mapping));
 
 	(*mapping)->map_class_str = NULL;
+	(*mapping)->map_class = NULL;
 	(*mapping)->map_perm_str = NULL;
+	(*mapping)->map_perm = NULL;
 	(*mapping)->classperms = NULL;
 }
 
@@ -2747,6 +2838,7 @@ void cil_userattributeset_init(struct cil_userattributeset **attrset)
 	*attrset = cil_malloc(sizeof(**attrset));
 
 	(*attrset)->attr_str = NULL;
+	(*attrset)->attr = NULL;
 	(*attrset)->str_expr = NULL;
 	(*attrset)->datum_expr = NULL;
 }
@@ -2756,6 +2848,7 @@ void cil_userlevel_init(struct cil_userlevel **usrlvl)
 	*usrlvl = cil_malloc(sizeof(**usrlvl));
 
 	(*usrlvl)->user_str = NULL;
+	(*usrlvl)->user = NULL;
 	(*usrlvl)->level_str = NULL;
 	(*usrlvl)->level = NULL;
 }
@@ -2765,6 +2858,7 @@ void cil_userrange_init(struct cil_userrange **userrange)
 	*userrange = cil_malloc(sizeof(**userrange));
 
 	(*userrange)->user_str = NULL;
+	(*userrange)->user = NULL;
 	(*userrange)->range_str = NULL;
 	(*userrange)->range = NULL;
 }
@@ -2795,20 +2889,6 @@ void cil_cat_init(struct cil_cat **cat)
 	cil_symtab_datum_init(&(*cat)->datum);
 	(*cat)->ordered = CIL_FALSE;
 	(*cat)->value = 0;
-}
-
-void cil_catorder_init(struct cil_catorder **catorder)
-{
-	*catorder = cil_malloc(sizeof(**catorder));
-
-	(*catorder)->cat_list_str = NULL;
-}
-
-void cil_sensorder_init(struct cil_sensorder **sensorder)
-{
-	*sensorder = cil_malloc(sizeof(**sensorder));
-
-	(*sensorder)->sens_list_str = NULL;
 }
 
 void cil_args_init(struct cil_args **args)
@@ -2866,7 +2946,9 @@ void cil_bounds_init(struct cil_bounds **bounds)
 	*bounds = cil_malloc(sizeof(**bounds));
 
 	(*bounds)->parent_str = NULL;
+	(*bounds)->parent = NULL;
 	(*bounds)->child_str = NULL;
+	(*bounds)->child = NULL;
 }
 
 void cil_default_init(struct cil_default **def)

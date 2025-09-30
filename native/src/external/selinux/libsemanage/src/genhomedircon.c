@@ -149,7 +149,7 @@ static int ignore_setup(char *ignoredirs) {
 
 	tok = strtok(ignoredirs, ";");
 	while(tok) {
-		ptr = calloc(sizeof(ignoredir_t),1);
+		ptr = calloc(1, sizeof(ignoredir_t));
 		if (!ptr)
 			goto err;
 		ptr->dir = strdup(tok);
@@ -985,9 +985,6 @@ static int add_user(genhomedircon_settings_t * s,
 		rbuflen = 1024;
 	else if (rbuflen <= 0)
 		goto cleanup;
-	rbuf = malloc(rbuflen);
-	if (rbuf == NULL)
-		goto cleanup;
 
 	if (user) {
 		prefix = semanage_user_get_prefix(user);
@@ -1005,7 +1002,17 @@ static int add_user(genhomedircon_settings_t * s,
 		homedir_role = prefix;
 	}
 
+retry:
+	rbuf = malloc(rbuflen);
+	if (rbuf == NULL)
+		goto cleanup;
+
 	retval = getpwnam_r(name, &pwstorage, rbuf, rbuflen, &pwent);
+	if (retval == ERANGE && rbuflen < LONG_MAX / 2) {
+		free(rbuf);
+		rbuflen *= 2;
+		goto retry;
+	}
 	if (retval != 0 || pwent == NULL) {
 		if (retval != 0 && retval != ENOENT) {
 			goto cleanup;

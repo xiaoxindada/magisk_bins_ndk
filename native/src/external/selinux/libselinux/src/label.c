@@ -17,12 +17,6 @@
 
 #define ARRAY_SIZE(x) (sizeof(x) / sizeof((x)[0]))
 
-#ifdef NO_FILE_BACKEND
-#define CONFIG_FILE_BACKEND(fnptr) NULL
-#else
-#define CONFIG_FILE_BACKEND(fnptr) &fnptr
-#endif
-
 #ifdef NO_MEDIA_BACKEND
 #define CONFIG_MEDIA_BACKEND(fnptr) NULL
 #else
@@ -51,8 +45,8 @@ typedef int (*selabel_initfunc)(struct selabel_handle *rec,
 				const struct selinux_opt *opts,
 				unsigned nopts);
 
-static selabel_initfunc initfuncs[] = {
-	CONFIG_FILE_BACKEND(selabel_file_init),
+static const selabel_initfunc initfuncs[] = {
+	&selabel_file_init,
 	CONFIG_MEDIA_BACKEND(selabel_media_init),
 	CONFIG_X_BACKEND(selabel_x_init),
 	CONFIG_DB_BACKEND(selabel_db_init),
@@ -63,14 +57,14 @@ static selabel_initfunc initfuncs[] = {
 
 static inline struct selabel_digest *selabel_is_digest_set
 				    (const struct selinux_opt *opts,
-				    unsigned n,
-				    struct selabel_digest *entry)
+				    unsigned n)
 {
 	struct selabel_digest *digest = NULL;
 
-	while (n--) {
+	while (n) {
+		n--;
 		if (opts[n].type == SELABEL_OPT_DIGEST &&
-					    opts[n].value == (char *)1) {
+					    !!opts[n].value) {
 			digest = calloc(1, sizeof(*digest));
 			if (!digest)
 				goto err;
@@ -84,8 +78,7 @@ static inline struct selabel_digest *selabel_is_digest_set
 			if (!digest->specfile_list)
 				goto err;
 
-			entry = digest;
-			return entry;
+			return digest;
 		}
 	}
 	return NULL;
@@ -121,34 +114,35 @@ static void selabel_digest_fini(struct selabel_digest *ptr)
 static inline int selabel_is_validate_set(const struct selinux_opt *opts,
 					  unsigned n)
 {
-	while (n--)
+	while (n) {
+		n--;
 		if (opts[n].type == SELABEL_OPT_VALIDATE)
 			return !!opts[n].value;
+	}
 
 	return 0;
 }
 
-int selabel_validate(struct selabel_handle *rec,
-		     struct selabel_lookup_rec *contexts)
+int selabel_validate(struct selabel_lookup_rec *contexts)
 {
 	int rc = 0;
 
-	if (!rec->validating || contexts->validated)
+	if (contexts->validated)
 		goto out;
 
 	rc = selinux_validate(&contexts->ctx_raw);
 	if (rc < 0)
 		goto out;
 
-	contexts->validated = 1;
+	contexts->validated = true;
 out:
 	return rc;
 }
 
 /* Public API helpers */
-static int selabel_fini(struct selabel_handle *rec,
+static int selabel_fini(const struct selabel_handle *rec,
 			    struct selabel_lookup_rec *lr,
-			    int translating)
+			    bool translating)
 {
 	char *path = NULL;
 
@@ -165,7 +159,7 @@ static int selabel_fini(struct selabel_handle *rec,
 }
 
 static struct selabel_lookup_rec *
-selabel_lookup_common(struct selabel_handle *rec, int translating,
+selabel_lookup_common(struct selabel_handle *rec, bool translating,
 		      const char *key, int type)
 {
 	struct selabel_lookup_rec *lr;
@@ -186,7 +180,7 @@ selabel_lookup_common(struct selabel_handle *rec, int translating,
 }
 
 static struct selabel_lookup_rec *
-selabel_lookup_bm_common(struct selabel_handle *rec, int translating,
+selabel_lookup_bm_common(struct selabel_handle *rec, bool translating,
 		      const char *key, int type, const char **aliases)
 {
 	struct selabel_lookup_rec *lr;
@@ -226,15 +220,14 @@ struct selabel_handle *selabel_open(unsigned int backend,
 		goto out;
 	}
 
-	rec = (struct selabel_handle *)malloc(sizeof(*rec));
+	rec = (struct selabel_handle *)calloc(1, sizeof(*rec));
 	if (!rec)
 		goto out;
 
-	memset(rec, 0, sizeof(*rec));
 	rec->backend = backend;
 	rec->validating = selabel_is_validate_set(opts, nopts);
 
-	rec->digest = selabel_is_digest_set(opts, nopts, rec->digest);
+	rec->digest = selabel_is_digest_set(opts, nopts);
 
 	if ((*initfuncs[backend])(rec, opts, nopts)) {
 		selabel_close(rec);
@@ -249,7 +242,7 @@ int selabel_lookup(struct selabel_handle *rec, char **con,
 {
 	struct selabel_lookup_rec *lr;
 
-	lr = selabel_lookup_common(rec, 1, key, type);
+	lr = selabel_lookup_common(rec, true, key, type);
 	if (!lr)
 		return -1;
 
@@ -262,7 +255,7 @@ int selabel_lookup_raw(struct selabel_handle *rec, char **con,
 {
 	struct selabel_lookup_rec *lr;
 
-	lr = selabel_lookup_common(rec, 0, key, type);
+	lr = selabel_lookup_common(rec, false, key, type);
 	if (!lr)
 		return -1;
 
@@ -317,7 +310,7 @@ int selabel_lookup_best_match(struct selabel_handle *rec, char **con,
 		return -1;
 	}
 
-	lr = selabel_lookup_bm_common(rec, 1, key, type, aliases);
+	lr = selabel_lookup_bm_common(rec, true, key, type, aliases);
 	if (!lr)
 		return -1;
 
@@ -335,7 +328,7 @@ int selabel_lookup_best_match_raw(struct selabel_handle *rec, char **con,
 		return -1;
 	}
 
-	lr = selabel_lookup_bm_common(rec, 0, key, type, aliases);
+	lr = selabel_lookup_bm_common(rec, false, key, type, aliases);
 	if (!lr)
 		return -1;
 
@@ -343,8 +336,8 @@ int selabel_lookup_best_match_raw(struct selabel_handle *rec, char **con,
 	return *con ? 0 : -1;
 }
 
-enum selabel_cmp_result selabel_cmp(struct selabel_handle *h1,
-				    struct selabel_handle *h2)
+enum selabel_cmp_result selabel_cmp(const struct selabel_handle *h1,
+				    const struct selabel_handle *h2)
 {
 	if (!h1->func_cmp || h1->func_cmp != h2->func_cmp)
 		return SELABEL_INCOMPARABLE;

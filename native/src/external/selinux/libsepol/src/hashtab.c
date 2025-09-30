@@ -1,5 +1,5 @@
 
-/* Author : Stephen Smalley, <sds@tycho.nsa.gov> */
+/* Author : Stephen Smalley, <stephen.smalley.work@gmail.com> */
 
 /*
  * Updated : Karl MacMillan <kmacmillan@mentalrootkit.com>
@@ -103,24 +103,26 @@ static void hashtab_check_resize(hashtab_t h)
 
 int hashtab_insert(hashtab_t h, hashtab_key_t key, hashtab_datum_t datum)
 {
-	int hvalue;
+	unsigned int hvalue;
 	hashtab_ptr_t prev, cur, newnode;
 
-	if (!h)
+	if (!h || h->nel == UINT32_MAX)
 		return SEPOL_ENOMEM;
 
 	hashtab_check_resize(h);
 
 	hvalue = h->hash_value(h, key);
-	prev = NULL;
-	cur = h->htable[hvalue];
-	while (cur && h->keycmp(h, key, cur->key) > 0) {
-		prev = cur;
-		cur = cur->next;
-	}
 
-	if (cur && (h->keycmp(h, key, cur->key) == 0))
-		return SEPOL_EEXIST;
+	for (prev = NULL, cur = h->htable[hvalue]; cur; prev = cur, cur = cur->next) {
+		int cmp;
+
+		cmp = h->keycmp(h, key, cur->key);
+		if (cmp > 0)
+			continue;
+		if (cmp == 0)
+			return SEPOL_EEXIST;
+		break;
+	}
 
 	newnode = (hashtab_ptr_t) malloc(sizeof(hashtab_node_t));
 	if (newnode == NULL)
@@ -144,21 +146,26 @@ int hashtab_remove(hashtab_t h, hashtab_key_t key,
 		   void (*destroy) (hashtab_key_t k,
 				    hashtab_datum_t d, void *args), void *args)
 {
-	int hvalue;
+	unsigned int hvalue;
 	hashtab_ptr_t cur, last;
 
 	if (!h)
 		return SEPOL_ENOENT;
 
 	hvalue = h->hash_value(h, key);
-	last = NULL;
-	cur = h->htable[hvalue];
-	while (cur != NULL && h->keycmp(h, key, cur->key) > 0) {
-		last = cur;
-		cur = cur->next;
+
+	for (last = NULL, cur = h->htable[hvalue]; cur; last = cur, cur = cur->next) {
+		int cmp;
+
+		cmp = h->keycmp(h, key, cur->key);
+		if (cmp > 0)
+			continue;
+		if (cmp == 0)
+			break;
+		return SEPOL_ENOENT;
 	}
 
-	if (cur == NULL || (h->keycmp(h, key, cur->key) != 0))
+	if (cur == NULL)
 		return SEPOL_ENOENT;
 
 	if (last == NULL)
@@ -176,21 +183,25 @@ int hashtab_remove(hashtab_t h, hashtab_key_t key,
 hashtab_datum_t hashtab_search(hashtab_t h, const_hashtab_key_t key)
 {
 
-	int hvalue;
+	unsigned int hvalue;
 	hashtab_ptr_t cur;
 
 	if (!h)
 		return NULL;
 
 	hvalue = h->hash_value(h, key);
-	cur = h->htable[hvalue];
-	while (cur != NULL && h->keycmp(h, key, cur->key) > 0)
-		cur = cur->next;
+	for (cur = h->htable[hvalue]; cur; cur = cur->next) {
+		int cmp;
 
-	if (cur == NULL || (h->keycmp(h, key, cur->key) != 0))
-		return NULL;
+		cmp = h->keycmp(h, key, cur->key);
+		if (cmp > 0)
+			continue;
+		if (cmp == 0)
+			return cur->datum;
+		break;
+	}
 
-	return cur->datum;
+	return NULL;
 }
 
 void hashtab_destroy(hashtab_t h)
@@ -240,14 +251,15 @@ int hashtab_map(hashtab_t h,
 	return SEPOL_OK;
 }
 
-void hashtab_hash_eval(hashtab_t h, char *tag)
+void hashtab_hash_eval(hashtab_t h, const char *tag)
 {
 	unsigned int i;
-	int chain_len, slots_used, max_chain_len;
+	size_t chain_len, slots_used, max_chain_len, chain2_len_sum;
 	hashtab_ptr_t cur;
 
 	slots_used = 0;
 	max_chain_len = 0;
+	chain2_len_sum = 0;
 	for (i = 0; i < h->size; i++) {
 		cur = h->htable[i];
 		if (cur) {
@@ -260,10 +272,12 @@ void hashtab_hash_eval(hashtab_t h, char *tag)
 
 			if (chain_len > max_chain_len)
 				max_chain_len = chain_len;
+			chain2_len_sum += chain_len * chain_len;
 		}
 	}
 
 	printf
-	    ("%s:  %d entries and %d/%d buckets used, longest chain length %d\n",
-	     tag, h->nel, slots_used, h->size, max_chain_len);
+	    ("%s:  %d entries and %zu/%d buckets used, longest chain length %zu, chain length^2 %zu, normalized chain length^2 %.2f\n",
+	     tag, h->nel, slots_used, h->size, max_chain_len, chain2_len_sum,
+	     chain2_len_sum ? (float)chain2_len_sum / slots_used : 0);
 }

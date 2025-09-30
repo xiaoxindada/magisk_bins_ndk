@@ -1,14 +1,15 @@
 PYTHON ?= python3
 
 # Installation directories.
-LINGUAS ?= ru
+LINGUAS ?=
 PREFIX ?= /usr
 SYSCONFDIR ?= /etc/sysconfig
 BINDIR ?= $(PREFIX)/bin
 SBINDIR ?= $(PREFIX)/sbin
 MANDIR ?= $(PREFIX)/share/man
 SHAREDIR ?= $(PREFIX)/share/sandbox
-override CFLAGS += -DPACKAGE="\"policycoreutils\"" -Wall -Werror -Wextra -W
+CFLAGS ?= -Werror -Wall -Wextra
+override CFLAGS += -DPACKAGE="\"policycoreutils\""
 override LDLIBS += -lselinux -lcap-ng
 SEUNSHARE_OBJS = seunshare.o
 

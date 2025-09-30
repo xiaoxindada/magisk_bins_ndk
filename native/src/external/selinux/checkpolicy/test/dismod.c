@@ -1,4 +1,3 @@
-
 /* Authors: Frank Mayer <mayerf@tresys.com> and Karl MacMillan <kmacmillan@tresys.com>
  *
  * Copyright (C) 2003,2004,2005 Tresys Technology, LLC
@@ -54,31 +53,76 @@
 #define DISPLAY_AVBLOCK_FILENAME_TRANS	7
 
 static policydb_t policydb;
-extern unsigned int ss_initialized;
 
-int policyvers = MOD_POLICYDB_VERSION_BASE;
-
-static const char *symbol_labels[9] = {
+static const char *const symbol_labels[9] = {
 	"commons",
 	"classes", "roles  ", "types  ", "users  ", "bools  ",
 	"levels ", "cats   ", "attribs"
 };
 
+static struct command {
+	enum {
+		EOL    = 0,
+		HEADER = 1,
+		CMD    = 1 << 1,
+		NOOPT  = 1 << 2,
+	} meta;
+	char cmd;
+	const char *desc;
+} commands[] = {
+	{HEADER, 0, "\nSelect a command:"},
+	{CMD,       '1', "display unconditional AVTAB" },
+	{CMD,       '2', "display conditional AVTAB" },
+	{CMD,       '3', "display users" },
+	{CMD,       '4', "display bools" },
+	{CMD,       '5', "display roles" },
+	{CMD,       '6', "display types, attributes, and aliases" },
+	{CMD,       '7', "display role transitions" },
+	{CMD,       '8', "display role allows" },
+	{CMD,       '9', "Display policycon" },
+	{CMD,       '0', "Display initial SIDs" },
+	{HEADER, 0, ""},
+	{CMD,       'a', "Display avrule requirements"},
+	{CMD,       'b', "Display avrule declarations"},
+	{CMD,       'c', "Display policy capabilities"},
+	{CMD|NOOPT, 'l', "Link in a module"},
+	{CMD,       'u', "Display the unknown handling setting"},
+	{CMD,       'F', "Display filename_trans rules"},
+	{CMD,       'v', "display the version of policy and/or module"},
+	{HEADER, 0, ""},
+	{CMD|NOOPT, 'f',  "set output file"},
+	{CMD|NOOPT, 'm',  "display menu"},
+	{CMD|NOOPT, 'q',  "quit"},
+	{EOL,   0, "" },
+};
+
 static __attribute__((__noreturn__)) void usage(const char *progname)
 {
-	printf("usage:  %s binary_pol_file\n\n", progname);
+	puts("Usage:");
+	printf(" %s [OPTIONS] binary_pol_file\n\n", progname);
+	puts("Options:");
+	puts(" -h, --help              print this help message");
+	puts(" -a, --actions ACTIONS   run non-interactively");
+	puts("");
+	puts("Actions:");
+	for (unsigned int i = 0; commands[i].meta != EOL; i++) {
+		if (commands[i].meta == HEADER
+		    || commands[i].meta & NOOPT)
+			continue;
+		printf("  %c    %s\n", commands[i].cmd, commands[i].desc);
+	}
+	puts("");
 	exit(1);
 }
 
 static void render_access_mask(uint32_t mask, uint32_t class, policydb_t * p,
 			       FILE * fp)
 {
-	char *perm;
+	char *perm = sepol_av_to_string(p, class, mask);
 	fprintf(fp, "{");
-	perm = sepol_av_to_string(p, class, mask);
-	if (perm)
-		fprintf(fp, "%s ", perm);
+	fprintf(fp, "%s ", perm ?: "<format-failure>");
 	fprintf(fp, "}");
+	free(perm);
 }
 
 static void render_access_bitmap(ebitmap_t * map, uint32_t class,
@@ -86,12 +130,12 @@ static void render_access_bitmap(ebitmap_t * map, uint32_t class,
 {
 	unsigned int i;
 	char *perm;
-	fprintf(fp, "{");
+	fprintf(fp, " {");
 	for (i = ebitmap_startbit(map); i < ebitmap_length(map); i++) {
 		if (ebitmap_get_bit(map, i)) {
 			perm = sepol_av_to_string(p, class, UINT32_C(1) << i);
-			if (perm)
-				fprintf(fp, " %s", perm);
+			fprintf(fp, "%s", perm ?: "<format-failure>");
+			free(perm);
 		}
 	}
 	fprintf(fp, " }");
@@ -117,14 +161,16 @@ static int display_type_set(type_set_t * set, uint32_t flags, policydb_t * polic
 	unsigned int i, num_types;
 
 	if (set->flags & TYPE_STAR) {
-		fprintf(fp, " * ");
+		fprintf(fp, " *");
 		return 0;
 	} else if (set->flags & TYPE_COMP) {
 		fprintf(fp, " ~");
+	} else {
+		fprintf(fp, " ");
 	}
 
 	num_types = 0;
-	if (flags & RULE_SELF) {
+	if (flags & (RULE_SELF | RULE_NOTSELF)) {
 		num_types++;
 	}
 
@@ -167,6 +213,13 @@ static int display_type_set(type_set_t * set, uint32_t flags, policydb_t * polic
 
 	if (flags & RULE_SELF) {
 		fprintf(fp, " self");
+	}
+
+	if (flags & RULE_NOTSELF) {
+		if (set->flags & TYPE_COMP)
+			fprintf(fp, " self");
+		else
+			fprintf(fp, " -self");
 	}
 
 	if (num_types > 1)
@@ -230,6 +283,9 @@ static int display_avrule(avrule_t * avrule, policydb_t * policy,
 		if (avrule->specified & AVRULE_DONTAUDIT) {
 			fprintf(fp, "  dontaudit");
 		}
+		if (avrule->specified & AVRULE_NEVERALLOW) {
+			fprintf(fp, "  neverallow");
+		}
 	} else if (avrule->specified & AVRULE_TYPE) {
 		if (avrule->specified & AVRULE_TRANSITION) {
 			fprintf(fp, "  type_transition");
@@ -240,15 +296,15 @@ static int display_avrule(avrule_t * avrule, policydb_t * policy,
 		if (avrule->specified & AVRULE_CHANGE) {
 			fprintf(fp, "  type_change");
 		}
-	} else if (avrule->specified & AVRULE_NEVERALLOW) {
-		fprintf(fp, "  neverallow");
 	} else if (avrule->specified & AVRULE_XPERMS) {
 		if (avrule->specified & AVRULE_XPERMS_ALLOWED)
-			fprintf(fp, "allowxperm ");
+			fprintf(fp, "  allowxperm");
 		else if (avrule->specified & AVRULE_XPERMS_AUDITALLOW)
-			fprintf(fp, "auditallowxperm ");
+			fprintf(fp, "  auditallowxperm");
 		else if (avrule->specified & AVRULE_XPERMS_DONTAUDIT)
-			fprintf(fp, "dontauditxperm ");
+			fprintf(fp, "  dontauditxperm");
+		else if (avrule->specified & AVRULE_XPERMS_NEVERALLOW)
+			fprintf(fp, "  neverallowxperm");
 	} else {
 		fprintf(fp, "     ERROR: no valid rule type specified\n");
 		return -1;
@@ -290,12 +346,15 @@ static int display_avrule(avrule_t * avrule, policydb_t * policy,
 		display_id(policy, fp, SYM_TYPES, avrule->perms->data - 1, "");
 	} else if (avrule->specified & AVRULE_XPERMS) {
 		avtab_extended_perms_t xperms;
+		char *perms;
 		int i;
 
 		if (avrule->xperms->specified == AVRULE_XPERMS_IOCTLFUNCTION)
 			xperms.specified = AVTAB_XPERMS_IOCTLFUNCTION;
 		else if (avrule->xperms->specified == AVRULE_XPERMS_IOCTLDRIVER)
 			xperms.specified = AVTAB_XPERMS_IOCTLDRIVER;
+		else if (avrule->xperms->specified == AVRULE_XPERMS_NLMSG)
+			xperms.specified = AVTAB_XPERMS_NLMSG;
 		else {
 			fprintf(fp, "     ERROR: no valid xperms specified\n");
 			return -1;
@@ -305,7 +364,13 @@ static int display_avrule(avrule_t * avrule, policydb_t * policy,
 		for (i = 0; i < EXTENDED_PERMS_LEN; i++)
 			xperms.perms[i] = avrule->xperms->perms[i];
 
-		fprintf(fp, "%s", sepol_extended_perms_to_string(&xperms));
+		perms = sepol_extended_perms_to_string(&xperms);
+		if (!perms) {
+			fprintf(fp, "     ERROR: failed to format xperms\n");
+			return -1;
+		}
+		fprintf(fp, "%s", perms);
+		free(perms);
 	}
 
 	fprintf(fp, ";\n");
@@ -400,7 +465,7 @@ static void display_expr(policydb_t * p, cond_expr_t * exp, FILE * fp)
 		switch (cur->expr_type) {
 		case COND_BOOL:
 			fprintf(fp, "%s ",
-				p->p_bool_val_to_name[cur->bool - 1]);
+				p->p_bool_val_to_name[cur->boolean - 1]);
 			break;
 		case COND_NOT:
 			fprintf(fp, "! ");
@@ -556,7 +621,7 @@ static int display_scope_index(scope_index_t * indices, policydb_t * p,
 								     p, out_fp);
 					} else {
 						fprintf(out_fp,
-							"<no perms known>");
+							" <no perms known>");
 					}
 				}
 			}
@@ -598,14 +663,14 @@ int display_cond_expressions(policydb_t * p, FILE * fp)
 
 int change_bool(char *name, int state, policydb_t * p, FILE * fp)
 {
-	cond_bool_datum_t *bool;
+	cond_bool_datum_t *boolean;
 
-	bool = hashtab_search(p->p_bools.table, name);
-	if (bool == NULL) {
+	boolean = hashtab_search(p->p_bools.table, name);
+	if (boolean == NULL) {
 		fprintf(fp, "Could not find bool %s\n", name);
 		return -1;
 	}
-	bool->state = state;
+	boolean->state = state;
 	evaluate_conds(p);
 	return 0;
 }
@@ -721,7 +786,7 @@ static int display_handle_unknown(policydb_t * p, FILE * out_fp)
 	return 0;
 }
 
-static int read_policy(char *filename, policydb_t * policy)
+static int read_policy(char *filename, policydb_t * policy, int verbose)
 {
 	FILE *in_fp;
 	struct policy_file f;
@@ -756,21 +821,17 @@ static int read_policy(char *filename, policydb_t * policy)
 		package->file_contexts = NULL;
 		retval =
 		    sepol_module_package_read(package,
-					      (sepol_policy_file_t *) & f, 1);
+					      (sepol_policy_file_t *) & f, verbose);
 		package->policy = NULL;
 		sepol_module_package_free(package);
 	} else {
-		if (policydb_init(policy)) {
-			fprintf(stderr, "%s:  Out of memory!\n", __FUNCTION__);
-			exit(1);
-		}
-		retval = policydb_read(policy, &f, 1);
+		retval = policydb_read(policy, &f, verbose);
 	}
 	fclose(in_fp);
 	return retval;
 }
 
-static void link_module(policydb_t * base, FILE * out_fp)
+static void link_module(policydb_t * base, FILE * out_fp, int verbose)
 {
 	char module_name[80] = { 0 };
 	int ret;
@@ -792,9 +853,16 @@ static void link_module(policydb_t * base, FILE * out_fp)
 		return;
 	}
 
+	if (policydb_init(mods)) {
+		fprintf(stderr, "Out of memory!\n");
+		exit(1);
+	}
+
 	/* read the binary policy */
-	fprintf(out_fp, "Reading module...\n");
-	if (read_policy(module_name, mods)) {
+	if (verbose)
+		fprintf(out_fp, "Reading module...\n");
+	policydb_set_target_platform(mods, base->target_platform);
+	if (read_policy(module_name, mods, verbose)) {
 		fprintf(stderr,
 			"%s:  error(s) encountered while loading policy\n",
 			module_name);
@@ -838,46 +906,60 @@ static void display_policycaps(policydb_t * p, FILE * fp)
 
 static int menu(void)
 {
-	printf("\nSelect a command:\n");
-	printf("1)  display unconditional AVTAB\n");
-	printf("2)  display conditional AVTAB\n");
-	printf("3)  display users\n");
-	printf("4)  display bools\n");
-	printf("5)  display roles\n");
-	printf("6)  display types, attributes, and aliases\n");
-	printf("7)  display role transitions\n");
-	printf("8)  display role allows\n");
-	printf("9)  Display policycon\n");
-	printf("0)  Display initial SIDs\n");
-	printf("\n");
-	printf("a)  Display avrule requirements\n");
-	printf("b)  Display avrule declarations\n");
-	printf("c)  Display policy capabilities\n");
-	printf("l)  Link in a module\n");
-	printf("u)  Display the unknown handling setting\n");
-	printf("F)  Display filename_trans rules\n");
-	printf("\n");
-	printf("f)  set output file\n");
-	printf("m)  display menu\n");
-	printf("q)  quit\n");
+	unsigned int i;
+	for (i = 0; commands[i].meta != EOL; i++) {
+		if (commands[i].meta == HEADER)
+			printf("%s\n", commands[i].desc);
+		else if (commands[i].meta & CMD)
+			printf("%c) %s\n", commands[i].cmd, commands[i].desc);
+	}
 	return 0;
+}
+
+static void print_version_info(policydb_t * p, FILE * fp)
+{
+	if (p->policy_type == POLICY_BASE) {
+		fprintf(fp, "Binary base policy file loaded.\n");
+	} else {
+		fprintf(fp, "Binary policy module file loaded.\n");
+		fprintf(fp, "Module name: %s\n", p->name);
+		fprintf(fp, "Module version: %s\n", p->version);
+	}
+
+	fprintf(fp, "Policy version: %d\n\n", p->policyvers);
 }
 
 int main(int argc, char **argv)
 {
+	char *ops = NULL;
+	char *mod;
 	FILE *out_fp = stdout;
 	char ans[81], OutfileName[121];
 
-	if (argc != 2)
+	if (argc < 2 || strcmp(argv[1], "-h") == 0 || strcmp(argv[1], "--help") == 0)
 		usage(argv[0]);
 
+	mod = argv[1];
+	if (strcmp (mod, "--actions") == 0 || strcmp (mod, "-a") == 0) {
+		if (argc != 4) {
+			fprintf(stderr, "%s: unexpected number of arguments\n", argv[0]);
+			usage(argv[0]);
+		}
+		ops = argv[2];
+		mod = argv[3];
+	} else if (mod[0] == '-') {
+		fprintf(stderr, "%s: unknown option: %s\n", argv[0], mod);
+		usage(argv[0]);
+	}
+
 	/* read the binary policy */
-	fprintf(out_fp, "Reading policy...\n");
+	if (!ops)
+		fprintf(out_fp, "Reading policy...\n");
 	if (policydb_init(&policydb)) {
 		fprintf(stderr, "%s:  Out of memory!\n", __FUNCTION__);
 		exit(1);
 	}
-	if (read_policy(argv[1], &policydb)) {
+	if (read_policy(mod, &policydb, ops? 0: 1)) {
 		fprintf(stderr,
 			"%s:  error(s) encountered while loading policy\n",
 			argv[0]);
@@ -896,27 +978,29 @@ int main(int argc, char **argv)
 		exit(1);
 	}
 
-	if (policydb_index_others(NULL, &policydb, 1)) {
+	if (policydb_index_others(NULL, &policydb, ops? 0: 1)) {
 		fprintf(stderr, "Error indexing others\n");
 		exit(1);
 	}
 
-	if (policydb.policy_type == POLICY_BASE) {
-		printf("Binary base policy file loaded.\n");
-	} else {
-		printf("Binary policy module file loaded.\n");
-		printf("Module name: %s\n", policydb.name);
-		printf("Module version: %s\n", policydb.version);
+	if (!ops) {
+		print_version_info(&policydb, stdout);
+		menu();
 	}
-
-	printf("Policy version: %d\n\n", policydb.policyvers);
-	menu();
 	for (;;) {
-		printf("\nCommand (\'m\' for menu):  ");
-		if (fgets(ans, sizeof(ans), stdin) == NULL) {
-			fprintf(stderr, "fgets failed at line %d: %s\n", __LINE__,
+		if (ops) {
+			puts("");
+			ans[0] = *ops? *ops++: 'q';
+			ans[1] = '\0';
+		} else {
+			printf("\nCommand (\'m\' for menu):  ");
+			if (fgets(ans, sizeof(ans), stdin) == NULL) {
+				if (feof(stdin))
+					break;
+				fprintf(stderr, "fgets failed at line %d: %s\n", __LINE__,
 					strerror(errno));
-			continue;
+				continue;
+			}
 		}
 
 		switch (ans[0]) {
@@ -1007,7 +1091,10 @@ int main(int argc, char **argv)
 					&policydb, out_fp);
 			break;
 		case 'l':
-			link_module(&policydb, out_fp);
+			link_module(&policydb, out_fp, ops? 0: 1);
+			break;
+		case 'v':
+			print_version_info(&policydb, out_fp);
 			break;
 		case 'q':
 			policydb_destroy(&policydb);

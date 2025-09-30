@@ -1,7 +1,7 @@
 /* Authors: Joshua Brindle <jbrindle@tresys.com>
  *
  * Assertion checker for avtab entries, taken from
- * checkpolicy.c by Stephen Smalley <sds@tycho.nsa.gov>
+ * checkpolicy.c by Stephen Smalley <stephen.smalley.work@gmail.com>
  *
  * Copyright (C) 2005 Tresys Technology, LLC
  *
@@ -48,26 +48,30 @@ static void report_failure(sepol_handle_t *handle, policydb_t *p, const avrule_t
 			   unsigned int stype, unsigned int ttype,
 			   const class_perm_node_t *curperm, uint32_t perms)
 {
+	char *permstr = sepol_av_to_string(p, curperm->tclass, perms);
+
 	if (avrule->source_filename) {
 		ERR(handle, "neverallow on line %lu of %s (or line %lu of %s) violated by allow %s %s:%s {%s };",
 		    avrule->source_line, avrule->source_filename, avrule->line, policy_name(p),
 		    p->p_type_val_to_name[stype],
 		    p->p_type_val_to_name[ttype],
 		    p->p_class_val_to_name[curperm->tclass - 1],
-		    sepol_av_to_string(p, curperm->tclass, perms));
+		    permstr ?: "<format-failure>");
 	} else if (avrule->line) {
 		ERR(handle, "neverallow on line %lu violated by allow %s %s:%s {%s };",
 		    avrule->line, p->p_type_val_to_name[stype],
 		    p->p_type_val_to_name[ttype],
 		    p->p_class_val_to_name[curperm->tclass - 1],
-		    sepol_av_to_string(p, curperm->tclass, perms));
+		    permstr ?: "<format-failure>");
 	} else {
 		ERR(handle, "neverallow violated by allow %s %s:%s {%s };",
 		    p->p_type_val_to_name[stype],
 		    p->p_type_val_to_name[ttype],
 		    p->p_class_val_to_name[curperm->tclass - 1],
-		    sepol_av_to_string(p, curperm->tclass, perms));
+		    permstr ?: "<format-failure>");
 	}
+
+	free(permstr);
 }
 
 static int match_any_class_permissions(class_perm_node_t *cp, uint32_t class, uint32_t data)
@@ -106,6 +110,10 @@ static int check_extended_permissions(av_extended_perms_t *neverallow, avtab_ext
 	} else if ((neverallow->specified == AVRULE_XPERMS_IOCTLDRIVER)
 			&& (allow->specified == AVTAB_XPERMS_IOCTLDRIVER)) {
 		rc = extended_permissions_and(neverallow->perms, allow->perms);
+	} else if ((neverallow->specified == AVRULE_XPERMS_NLMSG)
+			&& (allow->specified == AVTAB_XPERMS_NLMSG)) {
+		if (neverallow->driver == allow->driver)
+			rc = extended_permissions_and(neverallow->perms, allow->perms);
 	}
 
 	return rc;
@@ -136,6 +144,12 @@ static void extended_permissions_violated(avtab_extended_perms_t *result,
 	} else if ((neverallow->specified == AVRULE_XPERMS_IOCTLDRIVER)
 			&& (allow->specified == AVTAB_XPERMS_IOCTLDRIVER)) {
 		result->specified = AVTAB_XPERMS_IOCTLDRIVER;
+		for (i = 0; i < EXTENDED_PERMS_LEN; i++)
+			result->perms[i] = neverallow->perms[i] & allow->perms[i];
+	} else if ((neverallow->specified == AVRULE_XPERMS_NLMSG)
+			&& (allow->specified == AVTAB_XPERMS_NLMSG)) {
+		result->specified = AVTAB_XPERMS_NLMSG;
+		result->driver = allow->driver;
 		for (i = 0; i < EXTENDED_PERMS_LEN; i++)
 			result->perms[i] = neverallow->perms[i] & allow->perms[i];
 	}
@@ -172,21 +186,27 @@ static int report_assertion_extended_permissions(sepol_handle_t *handle,
 			     node = avtab_search_node_next(node, tmp_key.specified)) {
 				xperms = node->datum.xperms;
 				if ((xperms->specified != AVTAB_XPERMS_IOCTLFUNCTION)
-						&& (xperms->specified != AVTAB_XPERMS_IOCTLDRIVER))
+						&& (xperms->specified != AVTAB_XPERMS_IOCTLDRIVER)
+						&& (xperms->specified != AVTAB_XPERMS_NLMSG))
 					continue;
 				found_xperm = 1;
 				rc = check_extended_permissions(avrule->xperms, xperms);
 				/* failure on the extended permission check_extended_permissions */
 				if (rc) {
+					char *permstring;
+
 					extended_permissions_violated(&error, avrule->xperms, xperms);
+					permstring = sepol_extended_perms_to_string(&error);
+
 					ERR(handle, "neverallowxperm on line %lu of %s (or line %lu of %s) violated by\n"
 							"allowxperm %s %s:%s %s;",
 							avrule->source_line, avrule->source_filename, avrule->line, policy_name(p),
 							p->p_type_val_to_name[i],
 							p->p_type_val_to_name[j],
 							p->p_class_val_to_name[curperm->tclass - 1],
-							sepol_extended_perms_to_string(&error));
+							permstring ?: "<format-failure>");
 
+					free(permstring);
 					errors++;
 				}
 			}
@@ -195,13 +215,17 @@ static int report_assertion_extended_permissions(sepol_handle_t *handle,
 
 	/* failure on the regular permissions */
 	if (!found_xperm) {
+		char *permstr = sepol_av_to_string(p, curperm->tclass, perms);
+
 		ERR(handle, "neverallowxperm on line %lu of %s (or line %lu of %s) violated by\n"
 				"allow %s %s:%s {%s };",
 				avrule->source_line, avrule->source_filename, avrule->line, policy_name(p),
 				p->p_type_val_to_name[stype],
 				p->p_type_val_to_name[ttype],
 				p->p_class_val_to_name[curperm->tclass - 1],
-				sepol_av_to_string(p, curperm->tclass, perms));
+				permstr ?: "<format-failure>");
+
+		free(permstr);
 		errors++;
 
 	}
@@ -223,6 +247,7 @@ static int report_assertion_avtab_matches(avtab_key_t *k, avtab_datum_t *d, void
 	ebitmap_node_t *snode, *tnode;
 	unsigned int i, j;
 	const int is_avrule_self = (avrule->flags & RULE_SELF) != 0;
+	const int is_avrule_notself = (avrule->flags & RULE_NOTSELF) != 0;
 
 	if ((k->specified & AVTAB_ALLOWED) == 0)
 		return 0;
@@ -242,19 +267,31 @@ static int report_assertion_avtab_matches(avtab_key_t *k, avtab_datum_t *d, void
 	if (ebitmap_is_empty(&src_matches))
 		goto exit;
 
-	rc = ebitmap_and(&tgt_matches, &avrule->ttypes.types, &p->attr_type_map[k->target_type -1]);
-	if (rc < 0)
-		goto oom;
-
-	if (is_avrule_self) {
-		rc = ebitmap_and(&self_matches, &src_matches, &p->attr_type_map[k->target_type - 1]);
+	if (is_avrule_notself) {
+		if (ebitmap_is_empty(&avrule->ttypes.types)) {
+			/* avrule tgt is of the form ~self */
+			rc = ebitmap_cpy(&tgt_matches, &p->attr_type_map[k->target_type -1]);
+		} else {
+			/* avrule tgt is of the form {ATTR -self} */
+			rc = ebitmap_and(&tgt_matches, &avrule->ttypes.types, &p->attr_type_map[k->target_type - 1]);
+		}
+		if (rc)
+			goto oom;
+	} else {
+		rc = ebitmap_and(&tgt_matches, &avrule->ttypes.types, &p->attr_type_map[k->target_type -1]);
 		if (rc < 0)
 			goto oom;
 
-		if (!ebitmap_is_empty(&self_matches)) {
-			rc = ebitmap_union(&tgt_matches, &self_matches);
+		if (is_avrule_self) {
+			rc = ebitmap_and(&self_matches, &src_matches, &p->attr_type_map[k->target_type - 1]);
 			if (rc < 0)
 				goto oom;
+
+			if (!ebitmap_is_empty(&self_matches)) {
+				rc = ebitmap_union(&tgt_matches, &self_matches);
+				if (rc < 0)
+					goto oom;
+			}
 		}
 	}
 
@@ -271,6 +308,8 @@ static int report_assertion_avtab_matches(avtab_key_t *k, avtab_datum_t *d, void
 		ebitmap_for_each_positive_bit(&src_matches, snode, i) {
 			ebitmap_for_each_positive_bit(&tgt_matches, tnode, j) {
 				if (is_avrule_self && i != j)
+					continue;
+				if (is_avrule_notself && i == j)
 					continue;
 				if (avrule->specified == AVRULE_XPERMS_NEVERALLOW) {
 					a->errors += report_assertion_extended_permissions(handle,p, avrule,
@@ -348,7 +387,8 @@ static int check_assertion_extended_permissions_avtab(avrule_t *avrule, avtab_t 
 				xperms = node->datum.xperms;
 
 				if ((xperms->specified != AVTAB_XPERMS_IOCTLFUNCTION)
-						&& (xperms->specified != AVTAB_XPERMS_IOCTLDRIVER))
+						&& (xperms->specified != AVTAB_XPERMS_IOCTLDRIVER)
+						&& (xperms->specified != AVTAB_XPERMS_NLMSG))
 					continue;
 				rc = check_extended_permissions(neverallow_xperms, xperms);
 				if (rc)
@@ -383,6 +423,7 @@ static int check_assertion_extended_permissions(avrule_t *avrule, avtab_t *avtab
 	unsigned int i, j;
 	ebitmap_node_t *snode, *tnode;
 	const int is_avrule_self = (avrule->flags & RULE_SELF) != 0;
+	const int is_avrule_notself = (avrule->flags & RULE_NOTSELF) != 0;
 	int rc;
 
 	ebitmap_init(&src_matches);
@@ -399,20 +440,31 @@ static int check_assertion_extended_permissions(avrule_t *avrule, avtab_t *avtab
 		goto exit;
 	}
 
-	rc = ebitmap_and(&tgt_matches, &avrule->ttypes.types,
-			 &p->attr_type_map[k->target_type -1]);
-	if (rc < 0)
-		goto oom;
-
-	if (is_avrule_self) {
-		rc = ebitmap_and(&self_matches, &src_matches, &p->attr_type_map[k->target_type - 1]);
+	if (is_avrule_notself) {
+		if (ebitmap_is_empty(&avrule->ttypes.types)) {
+			/* avrule tgt is of the form ~self */
+			rc = ebitmap_cpy(&tgt_matches, &p->attr_type_map[k->target_type -1]);
+		} else {
+			/* avrule tgt is of the form {ATTR -self} */
+			rc = ebitmap_and(&tgt_matches, &avrule->ttypes.types, &p->attr_type_map[k->target_type - 1]);
+		}
+		if (rc < 0)
+			goto oom;
+	} else {
+		rc = ebitmap_and(&tgt_matches, &avrule->ttypes.types, &p->attr_type_map[k->target_type -1]);
 		if (rc < 0)
 			goto oom;
 
-		if (!ebitmap_is_empty(&self_matches)) {
-			rc = ebitmap_union(&tgt_matches, &self_matches);
+		if (is_avrule_self) {
+			rc = ebitmap_and(&self_matches, &src_matches, &p->attr_type_map[k->target_type - 1]);
 			if (rc < 0)
 				goto oom;
+
+			if (!ebitmap_is_empty(&self_matches)) {
+				rc = ebitmap_union(&tgt_matches, &self_matches);
+				if (rc < 0)
+					goto oom;
+			}
 		}
 	}
 
@@ -424,6 +476,8 @@ static int check_assertion_extended_permissions(avrule_t *avrule, avtab_t *avtab
 	ebitmap_for_each_positive_bit(&src_matches, snode, i) {
 		ebitmap_for_each_positive_bit(&tgt_matches, tnode, j) {
 			if (is_avrule_self && i != j)
+				continue;
+			if (is_avrule_notself && i == j)
 				continue;
 			if (check_assertion_extended_permissions_avtab(avrule, avtab, i, j, k, p)) {
 				rc = 1;
@@ -439,6 +493,61 @@ exit:
 	ebitmap_destroy(&src_matches);
 	ebitmap_destroy(&tgt_matches);
 	ebitmap_destroy(&self_matches);
+	return rc;
+}
+
+static int check_assertion_notself_match(avtab_key_t *k, avrule_t *avrule, policydb_t *p)
+{
+	ebitmap_t src_matches, tgt_matches;
+	unsigned int num_src_matches, num_tgt_matches;
+	int rc;
+
+	ebitmap_init(&src_matches);
+	ebitmap_init(&tgt_matches);
+
+	rc = ebitmap_and(&src_matches, &avrule->stypes.types, &p->attr_type_map[k->source_type - 1]);
+	if (rc < 0)
+		goto oom;
+
+	if (ebitmap_is_empty(&avrule->ttypes.types)) {
+		/* avrule tgt is of the form ~self */
+		rc = ebitmap_cpy(&tgt_matches, &p->attr_type_map[k->target_type - 1]);
+	} else {
+		/* avrule tgt is of the form {ATTR -self} */
+		rc = ebitmap_and(&tgt_matches, &avrule->ttypes.types, &p->attr_type_map[k->target_type - 1]);
+	}
+	if (rc < 0)
+		goto oom;
+
+	num_src_matches = ebitmap_cardinality(&src_matches);
+	num_tgt_matches = ebitmap_cardinality(&tgt_matches);
+	if (num_src_matches == 0 || num_tgt_matches == 0) {
+		rc = 0;
+		goto nomatch;
+	}
+	if (num_src_matches == 1 && num_tgt_matches == 1) {
+		ebitmap_t matches;
+		unsigned int num_matches;
+		rc = ebitmap_and(&matches, &src_matches, &tgt_matches);
+		if (rc < 0) {
+			ebitmap_destroy(&matches);
+			goto oom;
+		}
+		num_matches = ebitmap_cardinality(&matches);
+		ebitmap_destroy(&matches);
+		if (num_matches == 1) {
+			/* The only non-match is of the form TYPE TYPE */
+			rc = 0;
+			goto nomatch;
+		}
+	}
+
+	rc = 1;
+
+oom:
+nomatch:
+	ebitmap_destroy(&src_matches);
+	ebitmap_destroy(&tgt_matches);
 	return rc;
 }
 
@@ -485,16 +594,24 @@ static int check_assertion_avtab_match(avtab_key_t *k, avtab_datum_t *d, void *a
 	if (!ebitmap_match_any(&avrule->stypes.types, &p->attr_type_map[k->source_type - 1]))
 		goto nomatch;
 
-	/* neverallow may have tgts even if it uses SELF */
-	if (!ebitmap_match_any(&avrule->ttypes.types, &p->attr_type_map[k->target_type -1])) {
-		if (avrule->flags == RULE_SELF) {
-			rc = check_assertion_self_match(k, avrule, p);
-			if (rc < 0)
-				goto oom;
-			if (rc == 0)
-				goto nomatch;
-		} else {
+	if (avrule->flags & RULE_NOTSELF) {
+		rc = check_assertion_notself_match(k, avrule, p);
+		if (rc < 0)
+			goto oom;
+		if (rc == 0)
 			goto nomatch;
+	} else {
+		/* neverallow may have tgts even if it uses SELF */
+		if (!ebitmap_match_any(&avrule->ttypes.types, &p->attr_type_map[k->target_type -1])) {
+			if (avrule->flags == RULE_SELF) {
+				rc = check_assertion_self_match(k, avrule, p);
+				if (rc < 0)
+					goto oom;
+				if (rc == 0)
+					goto nomatch;
+			} else {
+				goto nomatch;
+			}
 		}
 	}
 

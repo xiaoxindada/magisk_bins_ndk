@@ -2,7 +2,9 @@
 #define SELINUX_INTERNAL_H_
 
 #include <selinux/selinux.h>
+#include <errno.h>
 #include <pthread.h>
+#include <stdio.h>
 
 
 extern int require_seusers ;
@@ -101,5 +103,47 @@ extern int has_selinux_config ;
 #ifndef HAVE_STRLCPY
 size_t strlcpy(char *dest, const char *src, size_t size);
 #endif
+
+#ifndef HAVE_REALLOCARRAY
+void *reallocarray(void *ptr, size_t nmemb, size_t size);
+#endif
+
+/* Use to ignore intentional unsigned under- and overflows while running under UBSAN. */
+#if defined(__clang__) && defined(__clang_major__) && (__clang_major__ >= 4)
+#if (__clang_major__ >= 12)
+#define ignore_unsigned_overflow_        __attribute__((no_sanitize("unsigned-integer-overflow", "unsigned-shift-base")))
+#else
+#define ignore_unsigned_overflow_        __attribute__((no_sanitize("unsigned-integer-overflow")))
+#endif
+#else
+#define ignore_unsigned_overflow_
+#endif
+
+/* Ignore usage of deprecated declaration */
+#ifdef __clang__
+#define IGNORE_DEPRECATED_DECLARATION_BEGIN \
+	_Pragma("clang diagnostic push") \
+	_Pragma("clang diagnostic ignored \"-Wdeprecated-declarations\"")
+#define IGNORE_DEPRECATED_DECLARATION_END \
+	_Pragma("clang diagnostic pop")
+#elif defined __GNUC__
+#define IGNORE_DEPRECATED_DECLARATION_BEGIN \
+	_Pragma("GCC diagnostic push") \
+	_Pragma("GCC diagnostic ignored \"-Wdeprecated-declarations\"")
+#define IGNORE_DEPRECATED_DECLARATION_END \
+	_Pragma("GCC diagnostic pop")
+#else
+#define IGNORE_DEPRECATED_DECLARATION_BEGIN
+#define IGNORE_DEPRECATED_DECLARATION_END
+#endif
+
+static inline void fclose_errno_safe(FILE *stream)
+{
+	int saved_errno;
+
+	saved_errno = errno;
+	(void) fclose(stream);
+	errno = saved_errno;
+}
 
 #endif /* SELINUX_INTERNAL_H_ */

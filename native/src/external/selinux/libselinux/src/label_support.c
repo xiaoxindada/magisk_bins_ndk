@@ -10,7 +10,6 @@
 #include <string.h>
 #include <stdio.h>
 #include <errno.h>
-#include <errno.h>
 #include "label_internal.h"
 
 /*
@@ -27,14 +26,14 @@ static inline int read_spec_entry(char **entry, char **ptr, int *len, const char
 	*entry = NULL;
 	char *tmp_buf = NULL;
 
-	while (isspace(**ptr) && **ptr != '\0')
+	while (isspace((unsigned char)**ptr) && **ptr != '\0')
 		(*ptr)++;
 
 	tmp_buf = *ptr;
 	*len = 0;
 
-	while (!isspace(**ptr) && **ptr != '\0') {
-		if (!isascii(**ptr)) {
+	while (!isspace((unsigned char)**ptr) && **ptr != '\0') {
+		if (!isascii((unsigned char)**ptr)) {
 			errno = EINVAL;
 			*errbuf = "Non-ASCII characters found";
 			return -1;
@@ -81,7 +80,7 @@ int  read_spec_entries(char *line_buf, const char **errbuf, int num_args, ...)
 		len++;
 
 	buf_p = line_buf;
-	while (isspace(*buf_p))
+	while (isspace((unsigned char)*buf_p))
 		buf_p++;
 
 	/* Skip comment lines and empty lines. */
@@ -138,7 +137,6 @@ void  digest_gen_hash(struct selabel_digest *digest)
 	Sha1Finalise(&context, (SHA1_HASH *)digest->digest);
 	free(digest->hashbuf);
 	digest->hashbuf = NULL;
-	return;
 }
 
 /**
@@ -154,7 +152,7 @@ void  digest_gen_hash(struct selabel_digest *digest)
  * Return %0 on success, -%1 with @errno set on failure.
  */
 int  digest_add_specfile(struct selabel_digest *digest, FILE *fp,
-				    char *from_addr, size_t buf_len,
+				    const char *from_addr, size_t buf_len,
 				    const char *path)
 {
 	unsigned char *tmp_buf;
@@ -176,12 +174,13 @@ int  digest_add_specfile(struct selabel_digest *digest, FILE *fp,
 	digest->hashbuf = tmp_buf;
 
 	if (fp) {
-		rewind(fp);
+		if (fseek(fp, 0L, SEEK_SET) == -1)
+			return -1;
+
 		if (fread(digest->hashbuf + (digest->hashbuf_size - buf_len),
 					    1, buf_len, fp) != buf_len)
 			return -1;
 
-		rewind(fp);
 	} else if (from_addr) {
 		tmp_buf = memcpy(digest->hashbuf +
 				    (digest->hashbuf_size - buf_len),

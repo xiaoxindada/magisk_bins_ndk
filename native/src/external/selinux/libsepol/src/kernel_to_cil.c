@@ -25,6 +25,7 @@
 #include <sepol/policydb/services.h>
 #include <sepol/policydb/util.h>
 
+#include "debug.h"
 #include "kernel_to_common.h"
 
 
@@ -43,8 +44,8 @@ static char *cond_expr_to_str(struct policydb *pdb, struct cond_expr *expr)
 
 	for (curr = expr; curr != NULL; curr = curr->next) {
 		if (curr->expr_type == COND_BOOL) {
-			char *val1 = pdb->p_bool_val_to_name[curr->bool - 1];
-			new_val = create_str("%s", 1, val1);
+			char *val1 = pdb->p_bool_val_to_name[curr->boolean - 1];
+			new_val = create_str("%s", val1);
 		} else {
 			const char *op;
 			uint32_t num_params;
@@ -59,7 +60,7 @@ static char *cond_expr_to_str(struct policydb *pdb, struct cond_expr *expr)
 			case COND_EQ:	op = "eq";  num_params = 2; break;
 			case COND_NEQ:	op = "neq"; num_params = 2; break;
 			default:
-				sepol_log_err("Unknown conditional operator: %i",
+				ERR(NULL, "Unknown conditional operator: %i",
 					      curr->expr_type);
 				goto exit;
 			}
@@ -67,38 +68,38 @@ static char *cond_expr_to_str(struct policydb *pdb, struct cond_expr *expr)
 			if (num_params == 2) {
 				val2 = strs_stack_pop(stack);
 				if (!val2) {
-					sepol_log_err("Invalid conditional expression");
+					ERR(NULL, "Invalid conditional expression");
 					goto exit;
 				}
 			}
 			val1 = strs_stack_pop(stack);
 			if (!val1) {
-				sepol_log_err("Invalid conditional expression");
+				ERR(NULL, "Invalid conditional expression");
 				free(val2);
 				goto exit;
 			}
 			if (num_params == 2) {
-				new_val = create_str("(%s %s %s)", 3, op, val1, val2);
+				new_val = create_str("(%s %s %s)", op, val1, val2);
 				free(val2);
 			} else {
-				new_val = create_str("(%s %s)", 2, op, val1);
+				new_val = create_str("(%s %s)", op, val1);
 			}
 			free(val1);
 		}
 		if (!new_val) {
-			sepol_log_err("Invalid conditional expression");
+			ERR(NULL, "Invalid conditional expression");
 			goto exit;
 		}
 		rc = strs_stack_push(stack, new_val);
 		if (rc != 0) {
-			sepol_log_err("Out of memory");
+			ERR(NULL, "Out of memory");
 			goto exit;
 		}
 	}
 
 	new_val = strs_stack_pop(stack);
 	if (!new_val || !strs_stack_empty(stack)) {
-		sepol_log_err("Invalid conditional expression");
+		ERR(NULL, "Invalid conditional expression");
 		goto exit;
 	}
 
@@ -146,7 +147,7 @@ static char *constraint_expr_to_str(struct policydb *pdb, struct constraint_expr
 			case CEXPR_DOMBY:   op = "domby";  break;
 			case CEXPR_INCOMP:  op = "incomp"; break;
 			default:
-				sepol_log_err("Unknown constraint operator: %i", curr->op);
+				ERR(NULL, "Unknown constraint operator: %i", curr->op);
 				goto exit;
 			}
 
@@ -167,17 +168,17 @@ static char *constraint_expr_to_str(struct policydb *pdb, struct constraint_expr
 			case CEXPR_L1H1:                 attr1 ="l1"; attr2 ="h1"; break;
 			case CEXPR_L2H2:                 attr1 ="l2"; attr2 ="h2"; break;
 			default:
-				sepol_log_err("Unknown constraint attribute: %i",
+				ERR(NULL, "Unknown constraint attribute: %i",
 					      curr->attr);
 				goto exit;
 			}
 
-			if (curr->attr >= CEXPR_XTARGET) {
+			if (curr->attr >= CEXPR_L1L2) {
 				*use_mls = 1;
 			}
 
 			if (curr->expr_type == CEXPR_ATTR) {
-				new_val = create_str("(%s %s %s)", 3, op, attr1, attr2);
+				new_val = create_str("(%s %s %s)", op, attr1, attr2);
 			} else {
 				char *names = NULL;
 				if (curr->attr & CEXPR_TYPE) {
@@ -191,14 +192,14 @@ static char *constraint_expr_to_str(struct policydb *pdb, struct constraint_expr
 				if (!names) {
 					names = strdup("NO_IDENTIFIER");
 					if (!names) {
-						sepol_log_err("Out of memory");
+						ERR(NULL, "Out of memory");
 						goto exit;
 					}
 				}
 				if (strchr(names, ' ')) {
-					new_val = create_str("(%s %s (%s))", 3, op, attr1, names);
+					new_val = create_str("(%s %s (%s))", op, attr1, names);
 				} else {
-					new_val = create_str("(%s %s %s)", 3, op, attr1, names);
+					new_val = create_str("(%s %s %s)", op, attr1, names);
 				}
 				free(names);
 			}
@@ -212,7 +213,7 @@ static char *constraint_expr_to_str(struct policydb *pdb, struct constraint_expr
 			case CEXPR_AND: op = "and"; num_params = 2; break;
 			case CEXPR_OR:  op = "or";  num_params = 2; break;
 			default:
-				sepol_log_err("Unknown constraint expression type: %i",
+				ERR(NULL, "Unknown constraint expression type: %i",
 					      curr->expr_type);
 				goto exit;
 			}
@@ -220,21 +221,21 @@ static char *constraint_expr_to_str(struct policydb *pdb, struct constraint_expr
 			if (num_params == 2) {
 				val2 = strs_stack_pop(stack);
 				if (!val2) {
-					sepol_log_err("Invalid constraint expression");
+					ERR(NULL, "Invalid constraint expression");
 					goto exit;
 				}
 			}
 			val1 = strs_stack_pop(stack);
 			if (!val1) {
-				sepol_log_err("Invalid constraint expression");
+				ERR(NULL, "Invalid constraint expression");
 				goto exit;
 			}
 
 			if (num_params == 2) {
-				new_val = create_str("(%s %s %s)", 3, op, val1, val2);
+				new_val = create_str("(%s %s %s)", op, val1, val2);
 				free(val2);
 			} else {
-				new_val = create_str("(%s %s)", 2, op, val1);
+				new_val = create_str("(%s %s)", op, val1);
 			}
 			free(val1);
 		}
@@ -243,14 +244,14 @@ static char *constraint_expr_to_str(struct policydb *pdb, struct constraint_expr
 		}
 		rc = strs_stack_push(stack, new_val);
 		if (rc != 0) {
-			sepol_log_err("Out of memory");
+			ERR(NULL, "Out of memory");
 			goto exit;
 		}
 	}
 
 	new_val = strs_stack_pop(stack);
 	if (!new_val || !strs_stack_empty(stack)) {
-		sepol_log_err("Invalid constraint expression");
+		ERR(NULL, "Invalid constraint expression");
 		goto exit;
 	}
 
@@ -296,6 +297,17 @@ static int class_constraint_rules_to_strs(struct policydb *pdb, char *classkey,
 		}
 
 		perms = sepol_av_to_string(pdb, class->s.value, curr->permissions);
+		if (!perms) {
+			ERR(NULL, "Failed to generate permission string");
+			rc = -1;
+			goto exit;
+		}
+		if (*perms == '\0') {
+			ERR(NULL, "No permissions in permission string");
+			free(perms);
+			rc = -1;
+			goto exit;
+		}
 
 		if (is_mls) {
 			key_word = "mlsconstrain";
@@ -305,7 +317,8 @@ static int class_constraint_rules_to_strs(struct policydb *pdb, char *classkey,
 			strs = non_mls_list;
 		}
 
-		rc = strs_create_and_add(strs, "(%s (%s (%s)) %s)", 4, key_word, classkey, perms+1, expr);
+		rc = strs_create_and_add(strs, "(%s (%s (%s)) %s)", key_word, classkey, perms+1, expr);
+		free(perms);
 		free(expr);
 		if (rc != 0) {
 			goto exit;
@@ -314,7 +327,7 @@ static int class_constraint_rules_to_strs(struct policydb *pdb, char *classkey,
 
 	return 0;
 exit:
-	sepol_log_err("Error gathering constraint rules\n");
+	ERR(NULL, "Error gathering constraint rules");
 	return rc;
 }
 
@@ -345,7 +358,7 @@ static int class_validatetrans_rules_to_strs(struct policydb *pdb, char *classke
 			strs = non_mls_list;
 		}
 
-		rc = strs_create_and_add(strs, "(%s %s %s)", 3, key_word, classkey, expr);
+		rc = strs_create_and_add(strs, "(%s %s %s)", key_word, classkey, expr);
 		free(expr);
 		if (rc != 0) {
 			goto exit;
@@ -423,7 +436,7 @@ static int write_handle_unknown_to_cil(FILE *out, struct policydb *pdb)
 		action = "allow";
 		break;
 	default:
-		sepol_log_err("Unknown value for handle-unknown: %i", pdb->handle_unknown);
+		ERR(NULL, "Unknown value for handle-unknown: %i", pdb->handle_unknown);
 		return -1;
 	}
 
@@ -508,7 +521,7 @@ static int write_class_decl_rules_to_cil(FILE *out, struct policydb *pdb)
 	/* common */
 	used = calloc(pdb->p_commons.nprim, sizeof(*used));
 	if (!used) {
-		sepol_log_err("Out of memory");
+		ERR(NULL, "Out of memory");
 		rc = -1;
 		goto exit;
 	}
@@ -543,7 +556,7 @@ static int write_class_decl_rules_to_cil(FILE *out, struct policydb *pdb)
 
 exit:
 	if (rc != 0) {
-		sepol_log_err("Error writing class rules to CIL\n");
+		ERR(NULL, "Error writing class rules to CIL");
 	}
 
 	return rc;
@@ -567,19 +580,20 @@ static int write_sids_to_cil(FILE *out, const char *const *sid_to_str,
 
 	for (isid = isids; isid != NULL; isid = isid->next) {
 		i = isid->sid[0];
-		if (i < num_sids) {
-			sid = (char *)sid_to_str[i];
+		if (i < num_sids && sid_to_str[i]) {
+			sid = strdup(sid_to_str[i]);
 		} else {
 			snprintf(unknown, 18, "%s%u", "UNKNOWN", i);
 			sid = strdup(unknown);
-			if (!sid) {
-				sepol_log_err("Out of memory");
-				rc = -1;
-				goto exit;
-			}
+		}
+		if (!sid) {
+			ERR(NULL, "Out of memory");
+			rc = -1;
+			goto exit;
 		}
 		rc = strs_add_at_index(strs, sid, i);
 		if (rc != 0) {
+			free(sid);
 			goto exit;
 		}
 	}
@@ -610,13 +624,10 @@ static int write_sids_to_cil(FILE *out, const char *const *sid_to_str,
 	sepol_printf(out, "))\n");
 
 exit:
-	for (i=num_sids; i<strs_num_items(strs); i++) {
-		sid = strs_read_at_index(strs, i);
-		free(sid);
-	}
+	strs_free_all(strs);
 	strs_destroy(&strs);
 	if (rc != 0) {
-		sepol_log_err("Error writing sid rules to CIL\n");
+		ERR(NULL, "Error writing sid rules to CIL");
 	}
 
 	return rc;
@@ -633,7 +644,7 @@ static int write_sid_decl_rules_to_cil(FILE *out, struct policydb *pdb)
 		rc = write_sids_to_cil(out, xen_sid_to_str, XEN_SID_SZ,
 				       pdb->ocontexts[0]);
 	} else {
-		sepol_log_err("Unknown target platform: %i", pdb->target_platform);
+		ERR(NULL, "Unknown target platform: %i", pdb->target_platform);
 		rc = -1;
 	}
 
@@ -652,7 +663,7 @@ static int write_default_user_to_cil(FILE *out, char *class_name, class_datum_t 
 		dft = "target";
 		break;
 	default:
-		sepol_log_err("Unknown default role value: %i", class->default_user);
+		ERR(NULL, "Unknown default role value: %i", class->default_user);
 		return -1;
 	}
 	sepol_printf(out, "(defaultuser %s %s)\n", class_name, dft);
@@ -672,7 +683,7 @@ static int write_default_role_to_cil(FILE *out, char *class_name, class_datum_t 
 		dft = "target";
 		break;
 	default:
-		sepol_log_err("Unknown default role value: %i", class->default_role);
+		ERR(NULL, "Unknown default role value: %i", class->default_role);
 		return -1;
 	}
 	sepol_printf(out, "(defaultrole %s %s)\n", class_name, dft);
@@ -692,7 +703,7 @@ static int write_default_type_to_cil(FILE *out, char *class_name, class_datum_t 
 		dft = "target";
 		break;
 	default:
-		sepol_log_err("Unknown default type value: %i", class->default_type);
+		ERR(NULL, "Unknown default type value: %i", class->default_type);
 		return -1;
 	}
 	sepol_printf(out, "(defaulttype %s %s)\n", class_name, dft);
@@ -727,7 +738,7 @@ static int write_default_range_to_cil(FILE *out, char *class_name, class_datum_t
 		dft = "glblub";
 		break;
 	default:
-		sepol_log_err("Unknown default type value: %i", class->default_range);
+		ERR(NULL, "Unknown default type value: %i", class->default_range);
 		return -1;
 	}
 	sepol_printf(out, "(defaultrange %s %s)\n", class_name, dft);
@@ -795,7 +806,7 @@ static int write_default_rules_to_cil(FILE *out, struct policydb *pdb)
 
 exit:
 	if (rc != 0) {
-		sepol_log_err("Error writing default rules to CIL\n");
+		ERR(NULL, "Error writing default rules to CIL");
 	}
 
 	return rc;
@@ -906,7 +917,7 @@ exit:
 	strs_destroy(&strs);
 
 	if (rc != 0) {
-		sepol_log_err("Error writing sensitivity rules to CIL\n");
+		ERR(NULL, "Error writing sensitivity rules to CIL");
 	}
 
 	return rc;
@@ -1010,7 +1021,7 @@ exit:
 	strs_destroy(&strs);
 
 	if (rc != 0) {
-		sepol_log_err("Error writing category rules to CIL\n");
+		ERR(NULL, "Error writing category rules to CIL");
 	}
 
 	return rc;
@@ -1141,7 +1152,7 @@ static int write_sensitivitycategory_rules_to_cil(FILE *out, struct policydb *pd
 
 exit:
 	if (rc != 0) {
-		sepol_log_err("Error writing sensitivitycategory rules to CIL\n");
+		ERR(NULL, "Error writing sensitivitycategory rules to CIL");
 	}
 
 	return rc;
@@ -1177,7 +1188,7 @@ static int write_mls_rules_to_cil(FILE *out, struct policydb *pdb)
 
 exit:
 	if (rc != 0) {
-		sepol_log_err("Error writing mls rules to CIL\n");
+		ERR(NULL, "Error writing mls rules to CIL");
 	}
 
 	return rc;
@@ -1199,12 +1210,12 @@ static int write_polcap_rules_to_cil(FILE *out, struct policydb *pdb)
 	ebitmap_for_each_positive_bit(&pdb->policycaps, node, i) {
 		name = sepol_polcap_getname(i);
 		if (name == NULL) {
-			sepol_log_err("Unknown policy capability id: %i", i);
+			ERR(NULL, "Unknown policy capability id: %i", i);
 			rc = -1;
 			goto exit;
 		}
 
-		rc = strs_create_and_add(strs, "(policycap %s)", 1, name);
+		rc = strs_create_and_add(strs, "(policycap %s)", name);
 		if (rc != 0) {
 			goto exit;
 		}
@@ -1218,7 +1229,7 @@ exit:
 	strs_destroy(&strs);
 
 	if (rc != 0) {
-		sepol_log_err("Error writing polcap rules to CIL\n");
+		ERR(NULL, "Error writing polcap rules to CIL");
 	}
 
 	return rc;
@@ -1263,7 +1274,7 @@ exit:
 	strs_destroy(&strs);
 
 	if (rc != 0) {
-		sepol_log_err("Error writing typeattribute rules to CIL\n");
+		ERR(NULL, "Error writing typeattribute rules to CIL");
 	}
 
 	return rc;
@@ -1308,7 +1319,7 @@ exit:
 	strs_destroy(&strs);
 
 	if (rc != 0) {
-		sepol_log_err("Error writing roleattribute rules to CIL\n");
+		ERR(NULL, "Error writing roleattribute rules to CIL");
 	}
 
 	return rc;
@@ -1322,7 +1333,7 @@ static int map_boolean_to_strs(char *key, void *data, void *args)
 
 	value = boolean->state ? "true" : "false";
 
-	return strs_create_and_add(strs, "(boolean %s %s)", 2, key, value);
+	return strs_create_and_add(strs, "(boolean %s %s)", key, value);
 }
 
 static int write_boolean_decl_rules_to_cil(FILE *out, struct policydb *pdb)
@@ -1348,7 +1359,7 @@ exit:
 	strs_destroy(&strs);
 
 	if (rc != 0) {
-		sepol_log_err("Error writing boolean declarations to CIL\n");
+		ERR(NULL, "Error writing boolean declarations to CIL");
 	}
 
 	return rc;
@@ -1393,7 +1404,7 @@ exit:
 	strs_destroy(&strs);
 
 	if (rc != 0) {
-		sepol_log_err("Error writing type declarations to CIL\n");
+		ERR(NULL, "Error writing type declarations to CIL");
 	}
 
 	return rc;
@@ -1425,7 +1436,7 @@ static int map_type_aliases_to_strs(char *key, void *data, void *args)
 static int write_type_alias_rules_to_cil(FILE *out, struct policydb *pdb)
 {
 	type_datum_t *alias;
-	struct strs *strs;
+	struct strs *strs = NULL;
 	char *name;
 	char *type;
 	unsigned i, num = 0;
@@ -1476,7 +1487,7 @@ exit:
 	strs_destroy(&strs);
 
 	if (rc != 0) {
-		sepol_log_err("Error writing type alias rules to CIL\n");
+		ERR(NULL, "Error writing type alias rules to CIL");
 	}
 
 	return rc;
@@ -1530,7 +1541,7 @@ exit:
 	strs_destroy(&strs);
 
 	if (rc != 0) {
-		sepol_log_err("Error writing type bounds rules to CIL\n");
+		ERR(NULL, "Error writing type bounds rules to CIL");
 	}
 
 	return rc;
@@ -1563,7 +1574,7 @@ static int write_type_attribute_sets_to_cil(FILE *out, struct policydb *pdb)
 		}
 
 		rc = strs_create_and_add(strs, "(typeattributeset %s (%s))",
-					 2, name, types);
+					 name, types);
 		free(types);
 		if (rc != 0) {
 			goto exit;
@@ -1578,7 +1589,7 @@ exit:
 	strs_destroy(&strs);
 
 	if (rc != 0) {
-		sepol_log_err("Error writing typeattributeset rules to CIL\n");
+		ERR(NULL, "Error writing typeattributeset rules to CIL");
 	}
 
 	return rc;
@@ -1620,7 +1631,7 @@ exit:
 	strs_destroy(&strs);
 
 	if (rc != 0) {
-		sepol_log_err("Error writing typepermissive rules to CIL\n");
+		ERR(NULL, "Error writing typepermissive rules to CIL");
 	}
 
 	return rc;
@@ -1628,25 +1639,33 @@ exit:
 
 #define next_bit_in_range(i, p) (((i) + 1 < sizeof(p)*8) && xperm_test(((i) + 1), p))
 
-static char *xperms_to_str(avtab_extended_perms_t *xperms)
+static char *xperms_to_str(const avtab_extended_perms_t *xperms)
 {
 	uint16_t value;
 	uint16_t low_bit;
 	uint16_t low_value;
 	unsigned int bit;
-	unsigned int in_range = 0;
-	static char xpermsbuf[2048];
-	char *p;
-	int len, remaining;
-
-	p = xpermsbuf;
-	remaining = sizeof(xpermsbuf);
+	unsigned int in_range;
+	char *buffer = NULL, *p;
+	int len;
+	size_t remaining, size = 128;
 
 	if ((xperms->specified != AVTAB_XPERMS_IOCTLFUNCTION)
-		&& (xperms->specified != AVTAB_XPERMS_IOCTLDRIVER)) {
+		&& (xperms->specified != AVTAB_XPERMS_IOCTLDRIVER)
+		&& (xperms->specified != AVTAB_XPERMS_NLMSG)) {
 		return NULL;
 	}
 
+retry:
+	if (__builtin_mul_overflow(size, 2, &size))
+		goto err;
+	p = realloc(buffer, size);
+	if (!p)
+		goto err;
+	buffer = p;
+	remaining = size;
+
+	in_range = 0;
 	for (bit = 0; bit < sizeof(xperms->perms)*8; bit++) {
 		len = 0;
 
@@ -1663,7 +1682,8 @@ static char *xperms_to_str(avtab_extended_perms_t *xperms)
 			continue;
 		}
 
-		if (xperms->specified & AVTAB_XPERMS_IOCTLFUNCTION) {
+		if ((xperms->specified == AVTAB_XPERMS_IOCTLFUNCTION)
+		 || (xperms->specified == AVTAB_XPERMS_NLMSG)) {
 			value = xperms->driver<<8 | bit;
 			if (in_range) {
 				low_value = xperms->driver<<8 | low_bit;
@@ -1672,7 +1692,7 @@ static char *xperms_to_str(avtab_extended_perms_t *xperms)
 			} else {
 				len = snprintf(p, remaining, " 0x%hx", value);
 			}
-		} else if (xperms->specified & AVTAB_XPERMS_IOCTLDRIVER) {
+		} else if (xperms->specified == AVTAB_XPERMS_IOCTLDRIVER) {
 			value = bit << 8;
 			if (in_range) {
 				low_value = low_bit << 8;
@@ -1683,22 +1703,26 @@ static char *xperms_to_str(avtab_extended_perms_t *xperms)
 			}
 
 		}
-		if (len < 0 || len >= remaining) {
-			return NULL;
-		}
+		if (len < 0)
+			goto err;
+		if ((size_t)len >= remaining)
+			goto retry;
 		p += len;
 		remaining -= len;
 	}
 
-	if (remaining < 2) {
-		return NULL;
-	}
+	if (remaining < 2)
+		goto retry;
 
-	xpermsbuf[0] = '(';
+	buffer[0] = '(';
 	*p++ = ')';
 	*p = '\0';
 
-	return xpermsbuf;
+	return buffer;
+
+err:
+	free(buffer);
+	return NULL;
 }
 
 static char *avtab_node_to_str(struct policydb *pdb, avtab_key_t *key, avtab_datum_t *datum)
@@ -1706,7 +1730,7 @@ static char *avtab_node_to_str(struct policydb *pdb, avtab_key_t *key, avtab_dat
 	uint32_t data = datum->data;
 	type_datum_t *type;
 	const char *flavor, *tgt;
-	char *src, *class, *perms, *new;
+	char *src, *class, *perms, *new, *xperm;
 	char *rule = NULL;
 
 	switch (0xFFF & key->specified) {
@@ -1739,7 +1763,7 @@ static char *avtab_node_to_str(struct policydb *pdb, avtab_key_t *key, avtab_dat
 		flavor = "typechange";
 		break;
 	default:
-		sepol_log_err("Unknown avtab type: %i", key->specified);
+		ERR(NULL, "Unknown avtab type: %i", key->specified);
 		goto exit;
 	}
 
@@ -1756,24 +1780,38 @@ static char *avtab_node_to_str(struct policydb *pdb, avtab_key_t *key, avtab_dat
 	if (key->specified & AVTAB_AV) {
 		perms = sepol_av_to_string(pdb, key->target_class, data);
 		if (perms == NULL) {
-			sepol_log_err("Failed to generate permission string");
+			ERR(NULL, "Failed to generate permission string");
 			goto exit;
 		}
-		rule = create_str("(%s %s %s (%s (%s)))", 5,
+		if (*perms == '\0') {
+			ERR(NULL, "No permissions in permission string");
+			free(perms);
+			goto exit;
+		}
+		rule = create_str("(%s %s %s (%s (%s)))",
 				  flavor, src, tgt, class, perms+1);
+		free(perms);
 	} else if (key->specified & AVTAB_XPERMS) {
 		perms = xperms_to_str(datum->xperms);
 		if (perms == NULL) {
-			sepol_log_err("Failed to generate extended permission string");
+			ERR(NULL, "Failed to generate extended permission string");
 			goto exit;
 		}
-
-		rule = create_str("(%s %s %s (%s %s (%s)))", 6,
-				  flavor, src, tgt, "ioctl", class, perms);
+		if (datum->xperms->specified == AVTAB_XPERMS_IOCTLFUNCTION || datum->xperms->specified == AVTAB_XPERMS_IOCTLDRIVER) {
+			xperm = (char *) "ioctl";
+		} else if (datum->xperms->specified == AVTAB_XPERMS_NLMSG) {
+			xperm = (char *) "nlmsg";
+		} else {
+			ERR(NULL, "Unknown extended permssion");
+			goto exit;
+		}
+		rule = create_str("(%s %s %s (%s %s (%s)))",
+				  flavor, src, tgt, xperm, class, perms);
+		free(perms);
 	} else {
 		new = pdb->p_type_val_to_name[data - 1];
 
-		rule = create_str("(%s %s %s %s %s)", 5, flavor, src, tgt, class, new);
+		rule = create_str("(%s %s %s %s %s)", flavor, src, tgt, class, new);
 	}
 
 	if (!rule) {
@@ -1862,7 +1900,7 @@ static int write_avtab_to_cil(FILE *out, struct policydb *pdb, int indent)
 
 exit:
 	if (rc != 0) {
-		sepol_log_err("Error writing avtab rules to CIL\n");
+		ERR(NULL, "Error writing avtab rules to CIL");
 	}
 
 	return rc;
@@ -1895,7 +1933,7 @@ static int map_filename_trans_to_str(hashtab_key_t key, void *data, void *arg)
 			src = pdb->p_type_val_to_name[bit];
 			rc = strs_create_and_add(strs,
 						 "(typetransition %s %s %s \"%s\" %s)",
-						 5, src, tgt, class, filename, new);
+						 src, tgt, class, filename, new);
 			if (rc)
 				return rc;
 		}
@@ -1933,7 +1971,7 @@ exit:
 	strs_destroy(&strs);
 
 	if (rc != 0) {
-		sepol_log_err("Error writing filename typetransition rules to CIL\n");
+		ERR(NULL, "Error writing filename typetransition rules to CIL");
 	}
 
 	return rc;
@@ -1948,10 +1986,10 @@ static char *level_to_str(struct policydb *pdb, struct mls_level *level)
 
 	if (!ebitmap_is_empty(cats)) {
 		cats_str = cats_ebitmap_to_str(cats, pdb->p_cat_val_to_name);
-		level_str = create_str("(%s %s)", 2, sens_str, cats_str);
+		level_str = create_str("(%s %s)", sens_str, cats_str);
 		free(cats_str);
 	} else {
-		level_str = create_str("(%s)", 1, sens_str);
+		level_str = create_str("(%s)", sens_str);
 	}
 
 	return level_str;
@@ -1973,7 +2011,7 @@ static char *range_to_str(struct policydb *pdb, mls_range_t *range)
 		goto exit;
 	}
 
-	range_str = create_str("(%s %s)", 2, low, high);
+	range_str = create_str("(%s %s)", low, high);
 
 exit:
 	free(low);
@@ -2006,7 +2044,7 @@ static int map_range_trans_to_str(hashtab_key_t key, void *data, void *arg)
 		goto exit;
 	}
 
-	rc = strs_create_and_add(strs, "(rangetransition %s %s %s %s)", 4,
+	rc = strs_create_and_add(strs, "(rangetransition %s %s %s %s)",
 				 src, tgt, class, range);
 	free(range);
 	if (rc != 0) {
@@ -2044,7 +2082,7 @@ exit:
 	strs_destroy(&strs);
 
 	if (rc != 0) {
-		sepol_log_err("Error writing range transition rules to CIL\n");
+		ERR(NULL, "Error writing range transition rules to CIL");
 	}
 
 	return rc;
@@ -2184,7 +2222,7 @@ exit:
 	}
 
 	if (rc != 0) {
-		sepol_log_err("Error writing conditional rules to CIL\n");
+		ERR(NULL, "Error writing conditional rules to CIL");
 	}
 
 	return rc;
@@ -2309,7 +2347,7 @@ exit:
 	strs_destroy(&strs);
 
 	if (rc != 0) {
-		sepol_log_err("Error writing role declarations to CIL\n");
+		ERR(NULL, "Error writing role declarations to CIL");
 	}
 
 	return rc;
@@ -2333,7 +2371,7 @@ static int write_role_transition_rules_to_cil(FILE *out, struct policydb *pdb)
 		class = pdb->p_class_val_to_name[curr->tclass - 1];
 		new = pdb->p_role_val_to_name[curr->new_role - 1];
 
-		rc = strs_create_and_add(strs, "(roletransition %s %s %s %s)", 4,
+		rc = strs_create_and_add(strs, "(roletransition %s %s %s %s)",
 					 role, type, class, new);
 		if (rc != 0) {
 			goto exit;
@@ -2350,7 +2388,7 @@ exit:
 	strs_destroy(&strs);
 
 	if (rc != 0) {
-		sepol_log_err("Error writing role transition rules to CIL\n");
+		ERR(NULL, "Error writing role transition rules to CIL");
 	}
 
 	return rc;
@@ -2372,7 +2410,7 @@ static int write_role_allow_rules_to_cil(FILE *out, struct policydb *pdb)
 		role = pdb->p_role_val_to_name[curr->role - 1];
 		new =  pdb->p_role_val_to_name[curr->new_role - 1];
 
-		rc = strs_create_and_add(strs, "(roleallow %s %s)", 2, role, new);
+		rc = strs_create_and_add(strs, "(roleallow %s %s)", role, new);
 		if (rc != 0) {
 			goto exit;
 		}
@@ -2388,7 +2426,7 @@ exit:
 	strs_destroy(&strs);
 
 	if (rc != 0) {
-		sepol_log_err("Error writing role allow rules to CIL\n");
+		ERR(NULL, "Error writing role allow rules to CIL");
 	}
 
 	return rc;
@@ -2529,7 +2567,7 @@ exit:
 		strs_destroy(&strs);
 
 	if (rc != 0) {
-		sepol_log_err("Error writing user declarations to CIL\n");
+		ERR(NULL, "Error writing user declarations to CIL");
 	}
 
 	return rc;
@@ -2547,13 +2585,13 @@ static char *context_to_str(struct policydb *pdb, struct context_struct *con)
 	if (pdb->mls) {
 		range = range_to_str(pdb, &con->range);
 	} else {
-		range = create_str("(%s %s)", 2, DEFAULT_LEVEL, DEFAULT_LEVEL);
+		range = create_str("(%s %s)", DEFAULT_LEVEL, DEFAULT_LEVEL);
 	}
 	if (!range) {
 		goto exit;
 	}
 
-	ctx = create_str("(%s %s %s %s)", 4, user, role, type, range);
+	ctx = create_str("(%s %s %s %s)", user, role, type, range);
 	free(range);
 
 exit:
@@ -2577,7 +2615,7 @@ static int write_sid_context_rules_to_cil(FILE *out, struct policydb *pdb, const
 
 	for (isid = pdb->ocontexts[0]; isid != NULL; isid = isid->next) {
 		i = isid->sid[0];
-		if (i < num_sids) {
+		if (i < num_sids && sid_to_str[i]) {
 			sid = (char *)sid_to_str[i];
 		} else {
 			snprintf(unknown, 18, "%s%u", "UNKNOWN", i);
@@ -2590,7 +2628,7 @@ static int write_sid_context_rules_to_cil(FILE *out, struct policydb *pdb, const
 			goto exit;
 		}
 
-		rule = create_str("(sidcontext %s %s)", 2, sid, ctx);
+		rule = create_str("(sidcontext %s %s)", sid, ctx);
 		free(ctx);
 		if (!rule) {
 			rc = -1;
@@ -2611,7 +2649,7 @@ exit:
 	strs_destroy(&strs);
 
 	if (rc != 0) {
-		sepol_log_err("Error writing sidcontext rules to CIL\n");
+		ERR(NULL, "Error writing sidcontext rules to CIL");
 	}
 
 	return rc;
@@ -2636,7 +2674,7 @@ static int write_selinux_fsuse_rules_to_cil(FILE *out, struct policydb *pdb)
 		case SECURITY_FS_USE_TRANS: behavior = "trans"; break;
 		case SECURITY_FS_USE_TASK:  behavior = "task"; break;
 		default:
-			sepol_log_err("Unknown fsuse behavior: %i", fsuse->v.behavior);
+			ERR(NULL, "Unknown fsuse behavior: %i", fsuse->v.behavior);
 			rc = -1;
 			goto exit;
 		}
@@ -2655,7 +2693,7 @@ static int write_selinux_fsuse_rules_to_cil(FILE *out, struct policydb *pdb)
 
 exit:
 	if (rc != 0) {
-		sepol_log_err("Error writing fsuse rules to CIL\n");
+		ERR(NULL, "Error writing fsuse rules to CIL");
 	}
 
 	return rc;
@@ -2712,10 +2750,10 @@ static int write_genfscon_rules_to_cil(FILE *out, struct policydb *pdb)
 			}
 
 			if (file_type) {
-				rc = strs_create_and_add(strs, "(genfscon %s \"%s\" %s %s)", 4,
+				rc = strs_create_and_add(strs, "(genfscon %s \"%s\" %s %s)",
 										 fstype, name, file_type, ctx);
 			} else {
-				rc = strs_create_and_add(strs, "(genfscon %s \"%s\" %s)", 3,
+				rc = strs_create_and_add(strs, "(genfscon %s \"%s\" %s)",
 										 fstype, name, ctx);
 			}
 			free(ctx);
@@ -2733,7 +2771,7 @@ exit:
 	strs_destroy(&strs);
 
 	if (rc != 0) {
-		sepol_log_err("Error writing genfscon rules to CIL\n");
+		ERR(NULL, "Error writing genfscon rules to CIL");
 	}
 
 	return rc;
@@ -2756,7 +2794,7 @@ static int write_selinux_port_rules_to_cil(FILE *out, struct policydb *pdb)
 		case IPPROTO_DCCP: protocol = "dccp"; break;
 		case IPPROTO_SCTP: protocol = "sctp"; break;
 		default:
-			sepol_log_err("Unknown portcon protocol: %i", portcon->u.port.protocol);
+			ERR(NULL, "Unknown portcon protocol: %i", portcon->u.port.protocol);
 			rc = -1;
 			goto exit;
 		}
@@ -2788,7 +2826,7 @@ static int write_selinux_port_rules_to_cil(FILE *out, struct policydb *pdb)
 
 exit:
 	if (rc != 0) {
-		sepol_log_err("Error writing portcon rules to CIL\n");
+		ERR(NULL, "Error writing portcon rules to CIL");
 	}
 
 	return rc;
@@ -2822,7 +2860,7 @@ static int write_selinux_netif_rules_to_cil(FILE *out, struct policydb *pdb)
 
 exit:
 	if (rc != 0) {
-		sepol_log_err("Error writing netifcon rules to CIL\n");
+		ERR(NULL, "Error writing netifcon rules to CIL");
 	}
 
 	return rc;
@@ -2838,13 +2876,13 @@ static int write_selinux_node_rules_to_cil(FILE *out, struct policydb *pdb)
 
 	for (node = pdb->ocontexts[4]; node != NULL; node = node->next) {
 		if (inet_ntop(AF_INET, &node->u.node.addr, addr, INET_ADDRSTRLEN) == NULL) {
-			sepol_log_err("Nodecon address is invalid: %m");
+			ERR(NULL, "Nodecon address is invalid: %m");
 			rc = -1;
 			goto exit;
 		}
 
 		if (inet_ntop(AF_INET, &node->u.node.mask, mask, INET_ADDRSTRLEN) == NULL) {
-			sepol_log_err("Nodecon mask is invalid: %m");
+			ERR(NULL, "Nodecon mask is invalid: %m");
 			rc = -1;
 			goto exit;
 		}
@@ -2862,7 +2900,7 @@ static int write_selinux_node_rules_to_cil(FILE *out, struct policydb *pdb)
 
 exit:
 	if (rc != 0) {
-		sepol_log_err("Error writing nodecon rules to CIL\n");
+		ERR(NULL, "Error writing nodecon rules to CIL");
 	}
 
 	return rc;
@@ -2878,13 +2916,13 @@ static int write_selinux_node6_rules_to_cil(FILE *out, struct policydb *pdb)
 
 	for (node = pdb->ocontexts[6]; node != NULL; node = node->next) {
 		if (inet_ntop(AF_INET6, &node->u.node6.addr, addr, INET6_ADDRSTRLEN) == NULL) {
-			sepol_log_err("Nodecon address is invalid: %m");
+			ERR(NULL, "Nodecon address is invalid: %m");
 			rc = -1;
 			goto exit;
 		}
 
 		if (inet_ntop(AF_INET6, &node->u.node6.mask, mask, INET6_ADDRSTRLEN) == NULL) {
-			sepol_log_err("Nodecon mask is invalid: %m");
+			ERR(NULL, "Nodecon mask is invalid: %m");
 			rc = -1;
 			goto exit;
 		}
@@ -2902,7 +2940,7 @@ static int write_selinux_node6_rules_to_cil(FILE *out, struct policydb *pdb)
 
 exit:
 	if (rc != 0) {
-		sepol_log_err("Error writing nodecon rules to CIL\n");
+		ERR(NULL, "Error writing nodecon rules to CIL");
 	}
 
 	return rc;
@@ -2926,7 +2964,7 @@ static int write_selinux_ibpkey_rules_to_cil(FILE *out, struct policydb *pdb)
 
 		if (inet_ntop(AF_INET6, &subnet_prefix.s6_addr,
 			      subnet_prefix_str, INET6_ADDRSTRLEN) == NULL) {
-			sepol_log_err("ibpkeycon subnet_prefix is invalid: %m");
+			ERR(NULL, "ibpkeycon subnet_prefix is invalid: %m");
 			rc = -1;
 			goto exit;
 		}
@@ -2958,7 +2996,7 @@ static int write_selinux_ibpkey_rules_to_cil(FILE *out, struct policydb *pdb)
 
 exit:
 	if (rc != 0) {
-		sepol_log_err("Error writing ibpkeycon rules to CIL\n");
+		ERR(NULL, "Error writing ibpkeycon rules to CIL");
 	}
 
 	return rc;
@@ -2995,7 +3033,7 @@ static int write_selinux_ibendport_rules_to_cil(FILE *out, struct policydb *pdb)
 
 exit:
 	if (rc != 0) {
-		sepol_log_err("Error writing ibendportcon rules to CIL\n");
+		ERR(NULL, "Error writing ibendportcon rules to CIL");
 	}
 
 	return rc;
@@ -3035,7 +3073,7 @@ static int write_xen_pirq_rules_to_cil(FILE *out, struct policydb *pdb)
 
 exit:
 	if (rc != 0) {
-		sepol_log_err("Error writing pirqcon rules to CIL\n");
+		ERR(NULL, "Error writing pirqcon rules to CIL");
 	}
 
 	return rc;
@@ -3078,7 +3116,7 @@ static int write_xen_ioport_rules_to_cil(FILE *out, struct policydb *pdb)
 
 exit:
 	if (rc != 0) {
-		sepol_log_err("Error writing ioportcon rules to CIL\n");
+		ERR(NULL, "Error writing ioportcon rules to CIL");
 	}
 
 	return rc;
@@ -3121,7 +3159,7 @@ static int write_xen_iomem_rules_to_cil(FILE *out, struct policydb *pdb)
 
 exit:
 	if (rc != 0) {
-		sepol_log_err("Error writing iomemcon rules to CIL\n");
+		ERR(NULL, "Error writing iomemcon rules to CIL");
 	}
 
 	return rc;
@@ -3156,7 +3194,7 @@ static int write_xen_pcidevice_rules_to_cil(FILE *out, struct policydb *pdb)
 
 exit:
 	if (rc != 0) {
-		sepol_log_err("Error writing pcidevicecon rules to CIL\n");
+		ERR(NULL, "Error writing pcidevicecon rules to CIL");
 	}
 
 	return rc;
@@ -3183,7 +3221,7 @@ static int write_xen_devicetree_rules_to_cil(FILE *out, struct policydb *pdb)
 
 exit:
 	if (rc != 0) {
-		sepol_log_err("Error writing devicetreecon rules to CIL\n");
+		ERR(NULL, "Error writing devicetreecon rules to CIL");
 	}
 
 	return rc;
@@ -3218,13 +3256,13 @@ int sepol_kernel_policydb_to_cil(FILE *out, struct policydb *pdb)
 	}
 
 	if (pdb == NULL) {
-		sepol_log_err("No policy");
+		ERR(NULL, "No policy");
 		rc = -1;
 		goto exit;
 	}
 
 	if (pdb->policy_type != SEPOL_POLICY_KERN) {
-		sepol_log_err("Policy is not a kernel policy");
+		ERR(NULL, "Policy is not a kernel policy");
 		rc = -1;
 		goto exit;
 	}
@@ -3236,7 +3274,7 @@ int sepol_kernel_policydb_to_cil(FILE *out, struct policydb *pdb)
 		 * the type_val_to_struct and p_type_val_to_name arrays and policy rules
 		 * can refer to those gaps.
 		 */
-		sepol_log_err("Writing policy versions between 20 and 23 as CIL is not supported");
+		ERR(NULL, "Writing policy versions between 20 and 23 as CIL is not supported");
 		rc = -1;
 		goto exit;
 	}

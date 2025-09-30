@@ -97,6 +97,24 @@ static int cil_copy_node(__attribute__((unused)) struct cil_db *db, void *data, 
 	return SEPOL_OK;
 }
 
+int cil_copy_ordered(__attribute__((unused)) struct cil_db *db, void *data, void **copy, __attribute__((unused)) symtab_t *symtab)
+{
+	struct cil_ordered *orig = data;
+	struct cil_ordered *new = NULL;
+
+	cil_ordered_init(&new);
+	if (orig->strs != NULL) {
+		cil_copy_list(orig->strs, &new->strs);
+	}
+	if (orig->datums != NULL) {
+		cil_copy_list(orig->datums, &new->datums);
+	}
+
+	*copy = new;
+
+	return SEPOL_OK;
+}
+
 int cil_copy_block(__attribute__((unused)) struct cil_db *db, void *data, void **copy, symtab_t *symtab)
 {
 	struct cil_block *orig = data;
@@ -130,6 +148,7 @@ int cil_copy_blockabstract(__attribute__((unused)) struct cil_db *db, void *data
 	cil_blockabstract_init(&new);
 
 	new->block_str = orig->block_str;
+	new->block = orig->block;
 
 	*copy = new;
 
@@ -230,7 +249,9 @@ int cil_copy_classmapping(__attribute__((unused)) struct cil_db *db, void *data,
 	cil_classmapping_init(&new);
 
 	new->map_class_str = orig->map_class_str;
+	new->map_class = orig->map_class;
 	new->map_perm_str = orig->map_perm_str;
+	new->map_perm = orig->map_perm;
 
 	cil_copy_classperms_list(orig->classperms, &new->classperms);
 
@@ -255,21 +276,6 @@ int cil_copy_class(__attribute__((unused)) struct cil_db *db, void *data, void *
 	cil_class_init(&new);
 
 	new->common = NULL;
-
-	*copy = new;
-
-	return SEPOL_OK;
-}
-
-int cil_copy_classorder(__attribute__((unused)) struct cil_db *db, void *data, void **copy, __attribute__((unused)) symtab_t *symtab)
-{
-	struct cil_classorder *orig = data;
-	struct cil_classorder *new = NULL;
-
-	cil_classorder_init(&new);
-	if (orig->class_list_str != NULL) {
-		cil_copy_list(orig->class_list_str, &new->class_list_str);
-	}
 
 	*copy = new;
 
@@ -308,6 +314,7 @@ int cil_copy_classpermissionset(__attribute__((unused)) struct cil_db *db, void 
 	cil_classpermissionset_init(&new);
 
 	new->set_str = orig->set_str;
+	new->set = orig->set;
 
 	cil_copy_classperms_list(orig->classperms, &new->classperms);
 
@@ -324,7 +331,9 @@ int cil_copy_classcommon(__attribute__((unused)) struct cil_db *db, void *data, 
 	cil_classcommon_init(&new);
 
 	new->class_str = orig->class_str;
+	new->class = orig->class;
 	new->common_str = orig->common_str;
+	new->common = orig->common;
 
 	*copy = new;
 
@@ -361,21 +370,6 @@ int cil_copy_sidcontext(struct cil_db *db, void *data, void **copy, __attribute_
 	} else {
 		cil_context_init(&new->context);
 		cil_copy_fill_context(db, orig->context, new->context);
-	}
-
-	*copy = new;
-
-	return SEPOL_OK;
-}
-
-int cil_copy_sidorder(__attribute__((unused)) struct cil_db *db, void *data, void **copy, __attribute__((unused)) symtab_t *symtab)
-{
-	struct cil_sidorder *orig = data;
-	struct cil_sidorder *new = NULL;
-
-	cil_sidorder_init(&new);
-	if (orig->sid_list_str != NULL) {
-		cil_copy_list(orig->sid_list_str, &new->sid_list_str);
 	}
 
 	*copy = new;
@@ -691,7 +685,9 @@ static int cil_copy_aliasactual(__attribute__((unused)) struct cil_db *db, void 
 	cil_aliasactual_init(&new);
 
 	new->alias_str = orig->alias_str;
+	new->alias = orig->alias;
 	new->actual_str = orig->actual_str;
+	new->actual = orig->actual;
 
 	*copy = new;
 
@@ -726,6 +722,7 @@ int cil_copy_nametypetransition(__attribute__((unused)) struct cil_db *db, void 
 	new->tgt_str = orig->tgt_str;
 	new->obj_str = orig->obj_str;
 	new->name_str = orig->name_str;
+	new->name = orig->name;
 	new->result_str = orig->result_str;
 
 
@@ -854,6 +851,22 @@ static int cil_copy_permissionx(struct cil_db *db, void *data, void **copy, symt
 	return SEPOL_OK;
 }
 
+int cil_copy_deny_rule(__attribute__((unused)) struct cil_db *db, void *data, void **copy, __attribute__((unused)) symtab_t *symtab)
+{
+	struct cil_deny_rule *orig = data;
+	struct cil_deny_rule *new = NULL;
+
+	cil_deny_rule_init(&new);
+
+	new->src_str = orig->src_str;
+	new->tgt_str = orig->tgt_str;
+	cil_copy_classperms_list(orig->classperms, &new->classperms);
+
+	*copy = new;
+
+	return SEPOL_OK;
+}
+
 int cil_copy_type_rule(__attribute__((unused)) struct cil_db *db, void *data, void **copy, __attribute__((unused)) symtab_t *symtab)
 {
 	struct cil_type_rule  *orig = data;
@@ -947,36 +960,6 @@ int cil_copy_senscat(struct cil_db *db, void *data, void **copy, __attribute__((
 	new->sens_str = orig->sens_str;
 
 	cil_copy_cats(db, orig->cats, &new->cats);
-
-	*copy = new;
-
-	return SEPOL_OK;
-}
-
-int cil_copy_catorder(__attribute__((unused)) struct cil_db *db, void *data, void **copy, __attribute__((unused)) symtab_t *symtab)
-{
-	struct cil_catorder *orig = data;
-	struct cil_catorder *new = NULL;
-
-	cil_catorder_init(&new);
-	if (orig->cat_list_str != NULL) {
-		cil_copy_list(orig->cat_list_str, &new->cat_list_str);
-	}
-
-	*copy = new;
-
-	return SEPOL_OK;
-}
-
-int cil_copy_sensitivityorder(__attribute__((unused)) struct cil_db *db, void *data, void **copy, __attribute__((unused)) symtab_t *symtab)
-{
-	struct cil_sensorder *orig = data;
-	struct cil_sensorder *new = NULL;
-
-	cil_sensorder_init(&new);
-	if (orig->sens_list_str != NULL) {
-		cil_copy_list(orig->sens_list_str, &new->sens_list_str);
-	}
 
 	*copy = new;
 
@@ -1149,6 +1132,7 @@ int cil_copy_filecon(struct cil_db *db, void *data, void **copy, __attribute__((
 	cil_filecon_init(&new);
 
 	new->path_str = orig->path_str;
+	new->path = orig->path;
 	new->type = orig->type;
 
 	if (orig->context_str != NULL) {
@@ -1752,7 +1736,7 @@ static int __cil_copy_node_helper(struct cil_tree_node *orig, uint32_t *finished
 		copy_func = &cil_copy_class;
 		break;
 	case CIL_CLASSORDER:
-		copy_func = &cil_copy_classorder;
+		copy_func = &cil_copy_ordered;
 		break;
 	case CIL_CLASSPERMISSION:
 		copy_func = &cil_copy_classpermission;
@@ -1770,7 +1754,7 @@ static int __cil_copy_node_helper(struct cil_tree_node *orig, uint32_t *finished
 		copy_func = &cil_copy_sidcontext;
 		break;
 	case CIL_SIDORDER:
-		copy_func = &cil_copy_sidorder;
+		copy_func = &cil_copy_ordered;
 		break;
 	case CIL_USER:
 		copy_func = &cil_copy_user;
@@ -1860,6 +1844,9 @@ static int __cil_copy_node_helper(struct cil_tree_node *orig, uint32_t *finished
 	case CIL_PERMISSIONX:
 		copy_func = &cil_copy_permissionx;
 		break;
+	case CIL_DENY_RULE:
+		copy_func = &cil_copy_deny_rule;
+		break;
 	case CIL_TYPE_RULE:
 		copy_func = &cil_copy_type_rule;
 		break;
@@ -1888,10 +1875,10 @@ static int __cil_copy_node_helper(struct cil_tree_node *orig, uint32_t *finished
 		copy_func = &cil_copy_senscat;
 		break;
 	case CIL_CATORDER:
-		copy_func = &cil_copy_catorder;
+		copy_func = &cil_copy_ordered;
 		break;
 	case CIL_SENSITIVITYORDER:
-		copy_func = &cil_copy_sensitivityorder;
+		copy_func = &cil_copy_ordered;
 		break;
 	case CIL_LEVEL:
 		copy_func = &cil_copy_level;

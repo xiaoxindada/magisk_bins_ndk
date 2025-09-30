@@ -1,6 +1,6 @@
 
 /* 
- * Author : Stephen Smalley, <sds@tycho.nsa.gov>
+ * Author : Stephen Smalley, <stephen.smalley.work@gmail.com>
  */
 
 /* Updated: David Caplan, <dac@tresys.com>
@@ -22,6 +22,7 @@
 
 %{
 #include <sys/types.h>
+#include <ctype.h>
 #include <limits.h>
 #include <stdint.h>
 #include <string.h>
@@ -39,6 +40,21 @@ static unsigned int lno = 0;
 int werror = 0;
 int yyerror(const char *msg);
 int yywarn(const char *msg);
+
+#ifdef FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION
+/*
+ * Version that does not exit, like yy_fatal_error(),
+ * since fuzz targets must not call exit().
+ */
+#include <setjmp.h>
+extern jmp_buf fuzzing_pre_parse_stack_state;
+void yyfatal(const char *msg)
+{
+	yyerror(msg);
+	longjmp(fuzzing_pre_parse_stack_state, 1);
+}
+#define YY_FATAL_ERROR(msg) yyfatal(msg)
+#endif
 
 void set_source_file(const char *name);
 
@@ -77,8 +93,6 @@ hexval	[0-9A-Fa-f]
 				      source_lineno++;
 				  yyless(1);
 				}
-CLONE |
-clone				{ return(CLONE); }
 COMMON |
 common				{ return(COMMON); }
 CLASS |
@@ -278,8 +292,10 @@ GLBLUB				{ return(GLBLUB); }
 {letter}({alnum}|[_\-])*([\.]?({alnum}|[_\-]))*	{ return(IDENTIFIER); }
 {digit}+|0x{hexval}+            { return(NUMBER); }
 {alnum}*{letter}{alnum}*        { return(FILESYSTEM); }
+{digit}{1,3}(\.{digit}{1,3}){3}"/"{digit}{1,2}	{ return(IPV4_CIDR); }
 {digit}{1,3}(\.{digit}{1,3}){3}    { return(IPV4_ADDR); }
 {hexval}{0,4}":"{hexval}{0,4}":"({hexval}|[:.])*  { return(IPV6_ADDR); }
+{hexval}{0,4}":"{hexval}{0,4}":"({hexval}|[:.])*"/"{digit}{1,3}	{ return(IPV6_CIDR); }
 {digit}+(\.({alnum}|[_.])*)?    { return(VERSION_IDENTIFIER); }
 #line[ ]1[ ]\"[^\n]*\"		{ set_source_file(yytext+9); }
 #line[ ]{digit}+	        {
@@ -310,10 +326,28 @@ GLBLUB				{ return(GLBLUB); }
 "]" |
 "~" |
 "*"				{ return(yytext[0]); } 
-.                               { yyerror("unrecognized character");}
+.                               { yyerror("unrecognized character");
+/* Available since bison 3.6, avoids duplicate error message */
+#ifdef YYerror
+				  return YYerror;
+#else
+				  return INVALID_CHAR;
+#endif
+				}
 %%
 int yyerror(const char *msg)
 {
+#ifndef FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION
+	const char *token;
+	char buf[8];
+
+	if (isprint((unsigned char)yytext[0])) {
+		token = yytext;
+	} else {
+		snprintf(buf, sizeof(buf), "%#x", yytext[0]);
+		token = buf;
+	}
+
 	if (source_file[0])
 		fprintf(stderr, "%s:%lu:",
 			source_file, source_lineno);
@@ -321,9 +355,13 @@ int yyerror(const char *msg)
 		fprintf(stderr, "(unknown source)::");
 	fprintf(stderr, "ERROR '%s' at token '%s' on line %lu:\n%s\n%s\n",
 			msg,
-			yytext,
+			token,
 			policydb_lineno,
 			linebuf[0], linebuf[1]);
+#else
+	(void)msg;
+#endif
+
 	policydb_errors++;
 	return -1;
 }
@@ -333,6 +371,7 @@ int yywarn(const char *msg)
 	if (werror)
 		return yyerror(msg);
 
+#ifndef FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION
 	if (source_file[0])
 		fprintf(stderr, "%s:%lu:",
 			source_file, source_lineno);
@@ -343,6 +382,8 @@ int yywarn(const char *msg)
 			yytext,
 			policydb_lineno,
 			linebuf[0], linebuf[1]);
+#endif
+
 	return 0;
 }
 

@@ -263,9 +263,15 @@ extern int security_compute_member_raw(const char * scon,
  * These interfaces are deprecated.  Use get_ordered_context_list() or
  * one of its variant interfaces instead.
  */
+#ifdef __GNUC__
+__attribute__ ((deprecated))
+#endif
 extern int security_compute_user(const char * scon,
 				 const char *username,
 				 char *** con);
+#ifdef __GNUC__
+__attribute__ ((deprecated))
+#endif
 extern int security_compute_user_raw(const char * scon,
 				     const char *username,
 				     char *** con);
@@ -367,7 +373,11 @@ extern int security_deny_unknown(void);
 /* Get the checkreqprot value */
 extern int security_get_checkreqprot(void);
 
-/* Disable SELinux at runtime (must be done prior to initial policy load). */
+/* Disable SELinux at runtime (must be done prior to initial policy load).
+   Unsupported since Linux 6.4. */
+#ifdef __GNUC__
+__attribute__ ((deprecated))
+#endif
 extern int security_disable(void);
 
 /* Get the policy version number. */
@@ -413,7 +423,7 @@ struct security_class_mapping {
  * starting at 1, and have one security_class_mapping structure entry
  * per define.
  */
-extern int selinux_set_mapping(struct security_class_mapping *map);
+extern int selinux_set_mapping(const struct security_class_mapping *map);
 
 /* Common helpers */
 
@@ -443,7 +453,11 @@ extern void selinux_flush_class_cache(void);
 /* Set the function used by matchpathcon_init when displaying
    errors about the file_contexts configuration.  If not set,
    then this defaults to fprintf(stderr, fmt, ...). */
-extern void set_matchpathcon_printf(void (*f) (const char *fmt, ...));
+extern void set_matchpathcon_printf(void
+#ifdef __GNUC__
+   __attribute__ ((format(printf, 1, 2)))
+#endif
+   (*f) (const char *fmt, ...));
 
 /* Set the function used by matchpathcon_init when checking the
    validity of a context in the file contexts configuration.  If not set,

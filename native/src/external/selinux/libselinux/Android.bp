@@ -81,6 +81,7 @@ cc_defaults {
         "src/getenforce.c",
         "src/getfilecon.c",
         "src/getpeercon.c",
+        "src/hashtab.c",
         "src/init.c",
         "src/label.c",
         "src/label_backends_android.c",
@@ -112,7 +113,8 @@ cc_defaults {
         },
         android: {
             cflags: [
-                "-DHAVE_STRLCPY"
+                "-DHAVE_STRLCPY",
+                "-DHAVE_REALLOCARRAY",
             ],
             srcs: [
                 "src/android/android_device.c",
@@ -158,26 +160,13 @@ cc_defaults {
     stl: "none",
 }
 
-soong_config_module_type {
-    name: "cc_defaults_libselinux_flags",
-    module_type: "cc_defaults",
-    config_namespace: "ANDROID",
-    bool_variables: [
-        "release_selinux_data_data_ignore",
-    ],
-    properties: [
-        "cflags",
-    ],
-}
-
-cc_defaults_libselinux_flags {
+cc_defaults {
     name: "libselinux_flags_defaults",
     host_supported: true,
-    soong_config_variables: {
-        release_selinux_data_data_ignore: {
-            cflags: ["-DSELINUX_FLAGS_DATA_DATA_IGNORE"],
-        }
-    }
+    cflags: select(release_flag("RELEASE_SELINUX_DATA_DATA_IGNORE"), {
+        true: ["-DSELINUX_FLAGS_DATA_DATA_IGNORE"],
+        default: [],
+    }),
 }
 
 cc_library {
@@ -215,12 +204,12 @@ cc_test_host {
     srcs: ["src/android/android_unittest.cpp"],
 
     cflags: [
-      // regex.h will conflict with the default regex.h from libc.
-      // Skip regex for gtest.
-      "-DGTEST_HAS_POSIX_RE=0",
-      // Disable automatic interactions with sysfs when libselinux is
-      // initialized. This ensures that the tests remain hermetic on the host.
-      "-DANDROID_UNIT_TESTING",
+        // regex.h will conflict with the default regex.h from libc.
+        // Skip regex for gtest.
+        "-DGTEST_HAS_POSIX_RE=0",
+        // Disable automatic interactions with sysfs when libselinux is
+        // initialized. This ensures that the tests remain hermetic on the host.
+        "-DANDROID_UNIT_TESTING",
     ],
     whole_static_libs: [
         "libbase",
@@ -229,7 +218,7 @@ cc_test_host {
     ],
 
     // Use default stl.
-    stl:""
+    stl: "",
 }
 
 cc_binary_host {
@@ -261,7 +250,12 @@ rust_bindgen {
     name: "libselinux_bindgen",
     wrapper_src: "rust/selinux.h",
     crate_name: "selinux_bindgen",
-    visibility: ["//frameworks/native/libs/binder/rust/tests", "//system/security/keystore2:__subpackages__", "//packages/modules/Virtualization:__subpackages__"],
+    visibility: [
+        "//frameworks/native/libs/binder/rust/tests",
+        "//system/security/keystore2:__subpackages__",
+        "//packages/modules/Virtualization:__subpackages__",
+        "//system/software_defined_vehicle:__subpackages__",
+    ],
     source_stem: "bindings",
     local_include_dirs: ["include"],
 
@@ -277,6 +271,7 @@ rust_bindgen {
         "--allowlist-function=getfilecon",
         "--allowlist-function=getpeercon",
         "--allowlist-function=getpidcon",
+        "--allowlist-function=getprevcon",
         "--allowlist-function=is_selinux_enabled",
         "--allowlist-function=lgetfilecon",
         "--allowlist-function=lsetfilecon",
@@ -318,6 +313,7 @@ rust_bindgen {
         "--allowlist-function=string_to_security_class",
         "--allowlist-function=selinux_android_context_with_level",
         "--allowlist-function=selinux_android_keystore2_key_context_handle",
+        "--allowlist-function=selinux_android_tee_service_context_handle",
 
         // We also need some constants in addition to the functions.
         "--allowlist-var=SELABEL_.*",

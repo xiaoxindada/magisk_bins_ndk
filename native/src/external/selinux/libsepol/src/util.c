@@ -32,7 +32,7 @@
 
 struct val_to_name {
 	unsigned int val;
-	char *name;
+	const char *name;
 };
 
 /* Add an unsigned integer to a dynamically reallocated array.  *cnt
@@ -44,7 +44,7 @@ int add_i_to_a(uint32_t i, uint32_t * cnt, uint32_t ** a)
 {
 	uint32_t *new;
 
-	if (cnt == NULL || a == NULL)
+	if (cnt == NULL || *cnt == UINT32_MAX || a == NULL)
 		return -1;
 
 	/* FIX ME: This is not very elegant! We use an array that we
@@ -82,20 +82,27 @@ static int perm_name(hashtab_key_t key, hashtab_datum_t datum, void *data)
 	return 0;
 }
 
-char *sepol_av_to_string(policydb_t * policydbp, uint32_t tclass,
+char *sepol_av_to_string(const policydb_t *policydbp, sepol_security_class_t tclass,
 			 sepol_access_vector_t av)
 {
 	struct val_to_name v;
-	static char avbuf[1024];
-	class_datum_t *cladatum;
-	char *perm = NULL, *p;
-	unsigned int i;
+	const class_datum_t *cladatum = policydbp->class_val_to_struct[tclass - 1];
+	uint32_t i;
 	int rc;
-	int avlen = 0, len;
+	char *buffer = NULL, *p;
+	int len;
+	size_t remaining, size = 64;
 
-	memset(avbuf, 0, sizeof avbuf);
-	cladatum = policydbp->class_val_to_struct[tclass - 1];
-	p = avbuf;
+retry:
+	if (__builtin_mul_overflow(size, 2, &size))
+		goto err;
+	p = realloc(buffer, size);
+	if (!p)
+		goto err;
+	*p = '\0'; /* Just in case there are no permissions */
+	buffer = p;
+	remaining = size;
+
 	for (i = 0; i < cladatum->permissions.nprim; i++) {
 		if (av & (UINT32_C(1) << i)) {
 			v.val = i + 1;
@@ -106,47 +113,64 @@ char *sepol_av_to_string(policydb_t * policydbp, uint32_t tclass,
 						 permissions.table, perm_name,
 						 &v);
 			}
-			if (rc)
-				perm = v.name;
-			if (perm) {
-				len =
-				    snprintf(p, sizeof(avbuf) - avlen, " %s",
-					     perm);
-				if (len < 0
-				    || (size_t) len >= (sizeof(avbuf) - avlen))
-					return NULL;
+			if (rc == 1) {
+				len = snprintf(p, remaining, " %s", v.name);
+				if (len < 0)
+					goto err;
+				if ((size_t) len >= remaining)
+					goto retry;
 				p += len;
-				avlen += len;
+				remaining -= len;
 			}
 		}
 	}
 
-	return avbuf;
+	return buffer;
+
+err:
+	free(buffer);
+	return NULL;
 }
 
 #define next_bit_in_range(i, p) (((i) + 1 < sizeof(p)*8) && xperm_test(((i) + 1), p))
 
-char *sepol_extended_perms_to_string(avtab_extended_perms_t *xperms)
+char *sepol_extended_perms_to_string(const avtab_extended_perms_t *xperms)
 {
 	uint16_t value;
 	uint16_t low_bit;
 	uint16_t low_value;
 	unsigned int bit;
-	unsigned int in_range = 0;
-	static char xpermsbuf[2048];
-	char *p;
-	int len, xpermslen = 0;
-	xpermsbuf[0] = '\0';
-	p = xpermsbuf;
+	unsigned int in_range;
+	char *buffer = NULL, *p;
+	int len;
+	size_t remaining, size = 128;
 
 	if ((xperms->specified != AVTAB_XPERMS_IOCTLFUNCTION)
-		&& (xperms->specified != AVTAB_XPERMS_IOCTLDRIVER))
+		&& (xperms->specified != AVTAB_XPERMS_IOCTLDRIVER)
+		&& (xperms->specified != AVTAB_XPERMS_NLMSG))
 		return NULL;
 
-	len = snprintf(p, sizeof(xpermsbuf) - xpermslen, "ioctl { ");
-	p += len;
-	xpermslen += len;
+retry:
+	if (__builtin_mul_overflow(size, 2, &size))
+		goto err;
+	p = realloc(buffer, size);
+	if (!p)
+		goto err;
+	buffer = p;
+	remaining = size;
 
+	if ((xperms->specified == AVTAB_XPERMS_IOCTLFUNCTION)
+		|| (xperms->specified == AVTAB_XPERMS_IOCTLDRIVER)) {
+		len = snprintf(p, remaining, "ioctl { ");
+	} else {
+		len = snprintf(p, remaining, "nlmsg { ");
+	}
+	if (len < 0 || (size_t)len >= remaining)
+		goto err;
+	p += len;
+	remaining -= len;
+
+	in_range = 0;
 	for (bit = 0; bit < sizeof(xperms->perms)*8; bit++) {
 		if (!xperm_test(bit, xperms->perms))
 			continue;
@@ -161,39 +185,47 @@ char *sepol_extended_perms_to_string(avtab_extended_perms_t *xperms)
 			continue;
 		}
 
-		if (xperms->specified & AVTAB_XPERMS_IOCTLFUNCTION) {
+		if (xperms->specified == AVTAB_XPERMS_IOCTLFUNCTION || xperms->specified == AVTAB_XPERMS_NLMSG) {
 			value = xperms->driver<<8 | bit;
 			if (in_range) {
 				low_value = xperms->driver<<8 | low_bit;
-				len = snprintf(p, sizeof(xpermsbuf) - xpermslen, "0x%hx-0x%hx ", low_value, value);
+				len = snprintf(p, remaining, "0x%hx-0x%hx ", low_value, value);
 			} else {
-				len = snprintf(p, sizeof(xpermsbuf) - xpermslen, "0x%hx ", value);
+				len = snprintf(p, remaining, "0x%hx ", value);
 			}
-		} else if (xperms->specified & AVTAB_XPERMS_IOCTLDRIVER) {
+		} else if (xperms->specified == AVTAB_XPERMS_IOCTLDRIVER) {
 			value = bit << 8;
 			if (in_range) {
 				low_value = low_bit << 8;
-				len = snprintf(p, sizeof(xpermsbuf) - xpermslen, "0x%hx-0x%hx ", low_value, (uint16_t) (value|0xff));
+				len = snprintf(p, remaining, "0x%hx-0x%hx ", low_value, (uint16_t) (value|0xff));
 			} else {
-				len = snprintf(p, sizeof(xpermsbuf) - xpermslen, "0x%hx-0x%hx ", value, (uint16_t) (value|0xff));
+				len = snprintf(p, remaining, "0x%hx-0x%hx ", value, (uint16_t) (value|0xff));
 			}
 
 		}
 
-		if (len < 0 || (size_t) len >= (sizeof(xpermsbuf) - xpermslen))
-			return NULL;
+		if (len < 0)
+			goto err;
+		if ((size_t) len >= remaining)
+			goto retry;
 
 		p += len;
-		xpermslen += len;
+		remaining -= len;
 		if (in_range)
 			in_range = 0;
 	}
 
-	len = snprintf(p, sizeof(xpermsbuf) - xpermslen, "}");
-	if (len < 0 || (size_t) len >= (sizeof(xpermsbuf) - xpermslen))
-		return NULL;
+	len = snprintf(p, remaining, "}");
+	if (len < 0)
+		goto err;
+	if ((size_t) len >= remaining)
+		goto retry;
 
-	return xpermsbuf;
+	return buffer;
+
+err:
+	free(buffer);
+	return NULL;
 }
 
 /*
@@ -202,9 +234,9 @@ char *sepol_extended_perms_to_string(avtab_extended_perms_t *xperms)
  */
 
 /* Read a token from a buffer */
-static inline int tokenize_str(char delim, char **str, char **ptr, size_t *len)
+static inline int tokenize_str(char delim, char **str, const char **ptr, size_t *len)
 {
-	char *tmp_buf = *ptr;
+	const char *tmp_buf = *ptr;
 	*str = NULL;
 
 	while (**ptr != '\0') {
@@ -254,9 +286,10 @@ static inline int tokenize_str(char delim, char **str, char **ptr, size_t *len)
  * contain the remaining content of line_buf. If the delimiter is any whitespace
  * character, then all whitespace will be squashed.
  */
-int tokenize(char *line_buf, char delim, int num_args, ...)
+int tokenize(const char *line_buf, char delim, int num_args, ...)
 {
-	char **arg, *buf_p;
+	char **arg;
+	const char *buf_p;
 	int rc, items;
 	size_t arg_len = 0;
 	va_list ap;

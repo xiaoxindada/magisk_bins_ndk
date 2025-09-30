@@ -1,6 +1,6 @@
 
 /*
- * Author : Stephen Smalley, <sds@tycho.nsa.gov>
+ * Author : Stephen Smalley, <stephen.smalley.work@gmail.com>
  */
 
 /*
@@ -89,8 +89,12 @@
 #include <sepol/policydb/link.h>
 
 #include "queue.h"
-#include "checkpolicy.h"
 #include "parse_util.h"
+
+// ANDROID: this code does not call policydb_destroy, perhaps others
+const char *__asan_default_options() {
+    return "detect_leaks=0";
+}
 
 static policydb_t policydb;
 static sidtab_t sidtab;
@@ -103,13 +107,11 @@ static int handle_unknown = SEPOL_DENY_UNKNOWN;
 static const char *txtfile = "policy.conf";
 static const char *binfile = "policy";
 
-unsigned int policyvers = 0;
-
 static __attribute__((__noreturn__)) void usage(const char *progname)
 {
 	printf
 	    ("usage:  %s [-b[F]] [-C] [-d] [-U handle_unknown (allow,deny,reject)] [-M] "
-	     "[-c policyvers (%d-%d)] [-o output_file|-] [-S] [-O] "
+	     "[-N] [-c policyvers (%d-%d)] [-o output_file|-] [-S] [-O] "
 	     "[-t target_platform (selinux,xen)] [-E] [-V] [input_file]\n",
 	     progname, POLICYDB_VERSION_MIN, POLICYDB_VERSION_MAX);
 	exit(1);
@@ -313,7 +315,7 @@ static void display_expr(const cond_expr_t * exp)
 		switch (cur->expr_type) {
 		case COND_BOOL:
 			printf("%s ",
-			       policydbp->p_bool_val_to_name[cur->bool - 1]);
+			       policydbp->p_bool_val_to_name[cur->boolean - 1]);
 			break;
 		case COND_NOT:
 			printf("! ");
@@ -354,14 +356,14 @@ static int display_cond_expressions(void)
 
 static int change_bool(const char *name, int state)
 {
-	cond_bool_datum_t *bool;
+	cond_bool_datum_t *boolean;
 
-	bool = hashtab_search(policydbp->p_bools.table, name);
-	if (bool == NULL) {
+	boolean = hashtab_search(policydbp->p_bools.table, name);
+	if (boolean == NULL) {
 		printf("Could not find bool %s\n", name);
 		return -1;
 	}
-	bool->state = state;
+	boolean->state = state;
 	evaluate_conds(policydbp);
 	return 0;
 }
@@ -370,10 +372,9 @@ static int check_level(hashtab_key_t key, hashtab_datum_t datum, void *arg __att
 {
 	level_datum_t *levdatum = (level_datum_t *) datum;
 
-	if (!levdatum->isalias && !levdatum->defined) {
-		fprintf(stderr,
-			"Error:  sensitivity %s was not used in a level definition!\n",
-			key);
+	if (!levdatum->isalias && levdatum->notdefined) {
+		fprintf(stderr, "Error:  sensitivity %s was not used in a level definition!\n",
+				key);
 		return -1;
 	}
 	return 0;
@@ -393,9 +394,10 @@ int main(int argc, char **argv)
 	size_t scontext_len, pathlen;
 	unsigned int i;
 	unsigned int protocol, port;
-	unsigned int binary = 0, debug = 0, sort = 0, cil = 0, conf = 0, optimize = 0;
+	unsigned int binary = 0, debug = 0, sort = 0, cil = 0, conf = 0, optimize = 0, disable_neverallow = 0;
 	struct val_to_name v;
 	int ret, ch, fd, target = SEPOL_TARGET_SELINUX;
+	unsigned int policyvers = 0;
 	unsigned int nel, uret;
 	struct stat sb;
 	void *map;
@@ -415,6 +417,7 @@ int main(int argc, char **argv)
 		{"version", no_argument, NULL, 'V'},
 		{"handle-unknown", required_argument, NULL, 'U'},
 		{"mls", no_argument, NULL, 'M'},
+		{"disable-neverallow", no_argument, NULL, 'N'},
 		{"cil", no_argument, NULL, 'C'},
 		{"conf",no_argument, NULL, 'F'},
 		{"sort", no_argument, NULL, 'S'},
@@ -424,7 +427,7 @@ int main(int argc, char **argv)
 		{NULL, 0, NULL, 0}
 	};
 
-	while ((ch = getopt_long(argc, argv, "o:t:dbU:MCFSVc:OEh", long_options, NULL)) != -1) {
+	while ((ch = getopt_long(argc, argv, "o:t:dbU:MNCFSVc:OEh", long_options, NULL)) != -1) {
 		switch (ch) {
 		case 'o':
 			outfile = optarg;
@@ -472,6 +475,9 @@ int main(int argc, char **argv)
 			break;
 		case 'M':
 			mlspol = 1;
+			break;
+		case 'N':
+			disable_neverallow = 1;
 			break;
 		case 'C':
 			cil = 1;
@@ -610,6 +616,7 @@ int main(int argc, char **argv)
 		/* Let sepol know if we are dealing with MLS support */
 		parse_policy.mls = mlspol;
 		parse_policy.handle_unknown = handle_unknown;
+		parse_policy.policyvers = policyvers ? policyvers : POLICYDB_VERSION_MAX;
 
 		policydbp = &parse_policy;
 
@@ -630,15 +637,14 @@ int main(int argc, char **argv)
 				fprintf(stderr, "%s:  policydb_init failed\n", argv[0]);
 				exit(1);
 			}
-			if (expand_module(NULL, policydbp, &policydb, 0, 1)) {
+			if (expand_module(NULL, policydbp, &policydb, /*verbose=*/0, !disable_neverallow)) {
 				fprintf(stderr, "Error while expanding policy\n");
 				exit(1);
 			}
+			policydb.policyvers = policyvers ? policyvers : POLICYDB_VERSION_MAX;
 			policydb_destroy(policydbp);
 			policydbp = &policydb;
 		}
-
-		policydbp->policyvers = policyvers ? policyvers : POLICYDB_VERSION_MAX;
 	}
 
 	if (policydb_load_isids(&policydb, &sidtab))

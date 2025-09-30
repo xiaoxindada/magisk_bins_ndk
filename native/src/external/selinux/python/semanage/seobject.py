@@ -247,7 +247,7 @@ class semanageRecords:
         global handle
         if args:
             # legacy code - args was store originally
-            if type(args) == str:
+            if isinstance(args, str):
                 self.store = args
             else:
                 self.args = args
@@ -504,11 +504,6 @@ class permissiveRecords(semanageRecords):
             print(t)
 
     def add(self, type):
-        try:
-            import sepolgen.module as module
-        except ImportError:
-            raise ValueError(_("The sepolgen python module is required to setup permissive domains.\nIn some distributions it is included in the policycoreutils-devel package.\n# yum install policycoreutils-devel\nOr similar for your distro."))
-
         name = "permissive_%s" % type
         modtxt = "(typepermissive %s)" % type
 
@@ -562,11 +557,6 @@ class loginRecords(semanageRecords):
         if rc < 0:
             raise ValueError(_("Could not create a key for %s") % name)
 
-        (rc, exists) = semanage_seuser_exists(self.sh, k)
-        if rc < 0:
-            raise ValueError(_("Could not check if login mapping for %s is defined") % name)
-        if exists:
-            raise ValueError(_("Login mapping for %s is already defined") % name)
         if name[0] == '%':
             try:
                 grp.getgrnam(name[1:])
@@ -605,10 +595,28 @@ class loginRecords(semanageRecords):
     def add(self, name, sename, serange):
         try:
             self.begin()
-            self.__add(name, sename, serange)
+            # Add a new mapping, or modify an existing one
+            if self.__exists(name):
+                print(_("Login mapping for %s is already defined, modifying instead") % name)
+                self.__modify(name, sename, serange)
+            else:
+                self.__add(name, sename, serange)
             self.commit()
         except ValueError as error:
             raise error
+
+    # check if login mapping for given user exists
+    def __exists(self, name):
+        (rc, k) = semanage_seuser_key_create(self.sh, name)
+        if rc < 0:
+            raise ValueError(_("Could not create a key for %s") % name)
+
+        (rc, exists) = semanage_seuser_exists(self.sh, k)
+        if rc < 0:
+            raise ValueError(_("Could not check if login mapping for %s is defined") % name)
+        semanage_seuser_key_free(k)
+
+        return exists
 
     def __modify(self, name, sename="", serange=""):
         rec, self.oldsename, self.oldserange = selinux.getseuserbyname(name)
@@ -826,12 +834,6 @@ class seluserRecords(semanageRecords):
         if rc < 0:
             raise ValueError(_("Could not create a key for %s") % name)
 
-        (rc, exists) = semanage_user_exists(self.sh, k)
-        if rc < 0:
-            raise ValueError(_("Could not check if SELinux user %s is defined") % name)
-        if exists:
-            raise ValueError(_("SELinux user %s is already defined") % name)
-
         (rc, u) = semanage_user_create(self.sh)
         if rc < 0:
             raise ValueError(_("Could not create SELinux user for %s") % name)
@@ -843,7 +845,7 @@ class seluserRecords(semanageRecords):
         for r in roles:
             rc = semanage_user_add_role(self.sh, u, r)
             if rc < 0:
-                raise ValueError(_("Could not add role %s for %s") % (r, name))
+                raise ValueError(_("Could not add role {role} for {name}").format(role=r, name=name))
 
         if is_mls_enabled == 1:
             rc = semanage_user_set_mlsrange(self.sh, u, serange)
@@ -855,7 +857,7 @@ class seluserRecords(semanageRecords):
                 raise ValueError(_("Could not set MLS level for %s") % name)
         rc = semanage_user_set_prefix(self.sh, u, prefix)
         if rc < 0:
-            raise ValueError(_("Could not add prefix %s for %s") % (r, prefix))
+            raise ValueError(_("Could not add prefix {prefix} for {role}").format(role=r, prefix=prefix))
         (rc, key) = semanage_user_key_extract(self.sh, u)
         if rc < 0:
             raise ValueError(_("Could not extract key for %s") % name)
@@ -871,11 +873,27 @@ class seluserRecords(semanageRecords):
     def add(self, name, roles, selevel, serange, prefix):
         try:
             self.begin()
-            self.__add(name, roles, selevel, serange, prefix)
+            if self.__exists(name):
+                print(_("SELinux user %s is already defined, modifying instead") % name)
+                self.__modify(name, roles, selevel, serange, prefix)
+            else:
+                self.__add(name, roles, selevel, serange, prefix)
             self.commit()
         except ValueError as error:
             self.mylog.commit(0)
             raise error
+
+    def __exists(self, name):
+        (rc, k) = semanage_user_key_create(self.sh, name)
+        if rc < 0:
+            raise ValueError(_("Could not create a key for %s") % name)
+
+        (rc, exists) = semanage_user_exists(self.sh, k)
+        if rc < 0:
+            raise ValueError(_("Could not check if SELinux user %s is defined") % name)
+        semanage_user_key_free(k)
+
+        return exists
 
     def __modify(self, name, roles=[], selevel="", serange="", prefix=""):
         oldserole = ""
@@ -1088,7 +1106,7 @@ class portRecords(semanageRecords):
 
         (rc, k) = semanage_port_key_create(self.sh, low, high, proto_d)
         if rc < 0:
-            raise ValueError(_("Could not create a key for %s/%s") % (proto, port))
+            raise ValueError(_("Could not create a key for {proto}/{port}").format(proto=proto, port=port))
         return (k, proto_d, low, high)
 
     def __add(self, port, proto, serange, type):
@@ -1108,46 +1126,40 @@ class portRecords(semanageRecords):
 
         (k, proto_d, low, high) = self.__genkey(port, proto)
 
-        (rc, exists) = semanage_port_exists(self.sh, k)
-        if rc < 0:
-            raise ValueError(_("Could not check if port %s/%s is defined") % (proto, port))
-        if exists:
-            raise ValueError(_("Port %s/%s already defined") % (proto, port))
-
         (rc, p) = semanage_port_create(self.sh)
         if rc < 0:
-            raise ValueError(_("Could not create port for %s/%s") % (proto, port))
+            raise ValueError(_("Could not create port for {proto}/{port}").format(proto=proto, port=port))
 
         semanage_port_set_proto(p, proto_d)
         semanage_port_set_range(p, low, high)
         (rc, con) = semanage_context_create(self.sh)
         if rc < 0:
-            raise ValueError(_("Could not create context for %s/%s") % (proto, port))
+            raise ValueError(_("Could not create context for {proto}/{port}").format(proto=proto, port=port))
 
         rc = semanage_context_set_user(self.sh, con, "system_u")
         if rc < 0:
-            raise ValueError(_("Could not set user in port context for %s/%s") % (proto, port))
+            raise ValueError(_("Could not set user in port context for {proto}/{port}").format(proto=proto, port=port))
 
         rc = semanage_context_set_role(self.sh, con, "object_r")
         if rc < 0:
-            raise ValueError(_("Could not set role in port context for %s/%s") % (proto, port))
+            raise ValueError(_("Could not set role in port context for {proto}/{port}").format(proto=proto, port=port))
 
         rc = semanage_context_set_type(self.sh, con, type)
         if rc < 0:
-            raise ValueError(_("Could not set type in port context for %s/%s") % (proto, port))
+            raise ValueError(_("Could not set type in port context for {proto}/{port}").format(proto=proto, port=port))
 
         if (is_mls_enabled == 1) and (serange != ""):
             rc = semanage_context_set_mls(self.sh, con, serange)
             if rc < 0:
-                raise ValueError(_("Could not set mls fields in port context for %s/%s") % (proto, port))
+                raise ValueError(_("Could not set mls fields in port context for {proto}/{port}").format(proto=proto, port=port))
 
         rc = semanage_port_set_con(self.sh, p, con)
         if rc < 0:
-            raise ValueError(_("Could not set port context for %s/%s") % (proto, port))
+            raise ValueError(_("Could not set port context for {proto}/{port}").format(proto=proto, port=port))
 
         rc = semanage_port_modify_local(self.sh, k, p)
         if rc < 0:
-            raise ValueError(_("Could not add port %s/%s") % (proto, port))
+            raise ValueError(_("Could not add port {proto}/{port}").format(proto=proto, port=port))
 
         semanage_context_free(con)
         semanage_port_key_free(k)
@@ -1157,8 +1169,22 @@ class portRecords(semanageRecords):
 
     def add(self, port, proto, serange, type):
         self.begin()
-        self.__add(port, proto, serange, type)
+        if self.__exists(port, proto):
+            print(_("Port {proto}/{port} already defined, modifying instead").format(proto=proto, port=port))
+            self.__modify(port, proto, serange, type)
+        else:
+            self.__add(port, proto, serange, type)
         self.commit()
+
+    def __exists(self, port, proto):
+        (k, proto_d, low, high) = self.__genkey(port, proto)
+
+        (rc, exists) = semanage_port_exists(self.sh, k)
+        if rc < 0:
+            raise ValueError(_("Could not check if port {proto}/{port} is defined").format(proto=proto, port=port))
+        semanage_port_key_free(k)
+
+        return exists
 
     def __modify(self, port, proto, serange, setype):
         if serange == "" and setype == "":
@@ -1175,13 +1201,13 @@ class portRecords(semanageRecords):
 
         (rc, exists) = semanage_port_exists(self.sh, k)
         if rc < 0:
-            raise ValueError(_("Could not check if port %s/%s is defined") % (proto, port))
+            raise ValueError(_("Could not check if port {proto}/{port} is defined").format(proto=proto, port=port))
         if not exists:
-            raise ValueError(_("Port %s/%s is not defined") % (proto, port))
+            raise ValueError(_("Port {proto}/{port} is not defined").format(proto=proto, port=port))
 
         (rc, p) = semanage_port_query(self.sh, k)
         if rc < 0:
-            raise ValueError(_("Could not query port %s/%s") % (proto, port))
+            raise ValueError(_("Could not query port {proto}/{port}").format(proto=proto, port=port))
 
         con = semanage_port_get_con(p)
 
@@ -1195,7 +1221,7 @@ class portRecords(semanageRecords):
 
         rc = semanage_port_modify_local(self.sh, k, p)
         if rc < 0:
-            raise ValueError(_("Could not modify port %s/%s") % (proto, port))
+            raise ValueError(_("Could not modify port {proto}/{port}").format(proto=proto, port=port))
 
         semanage_port_key_free(k)
         semanage_port_free(p)
@@ -1241,19 +1267,19 @@ class portRecords(semanageRecords):
         (k, proto_d, low, high) = self.__genkey(port, proto)
         (rc, exists) = semanage_port_exists(self.sh, k)
         if rc < 0:
-            raise ValueError(_("Could not check if port %s/%s is defined") % (proto, port))
+            raise ValueError(_("Could not check if port {proto}/{port} is defined").format(proto=proto, port=port))
         if not exists:
-            raise ValueError(_("Port %s/%s is not defined") % (proto, port))
+            raise ValueError(_("Port {proto}/{port} is not defined").format(proto=proto, port=port))
 
         (rc, exists) = semanage_port_exists_local(self.sh, k)
         if rc < 0:
-            raise ValueError(_("Could not check if port %s/%s is defined") % (proto, port))
+            raise ValueError(_("Could not check if port {proto}/{port} is defined").format(proto=proto, port=port))
         if not exists:
-            raise ValueError(_("Port %s/%s is defined in policy, cannot be deleted") % (proto, port))
+            raise ValueError(_("Port {proto}/{port} is defined in policy, cannot be deleted").format(proto=proto, port=port))
 
         rc = semanage_port_del_local(self.sh, k)
         if rc < 0:
-            raise ValueError(_("Could not delete port %s/%s") % (proto, port))
+            raise ValueError(_("Could not delete port {proto}/{port}").format(proto=proto, port=port))
 
         semanage_port_key_free(k)
 
@@ -1362,7 +1388,7 @@ class ibpkeyRecords(semanageRecords):
 
         (rc, k) = semanage_ibpkey_key_create(self.sh, subnet_prefix, low, high)
         if rc < 0:
-            raise ValueError(_("Could not create a key for %s/%s") % (subnet_prefix, pkey))
+            raise ValueError(_("Could not create a key for {subnet_prefix}/{pkey}").format(subnet_prefix=subnet_prefix, pkey=pkey))
         return (k, subnet_prefix, low, high)
 
     def __add(self, pkey, subnet_prefix, serange, type):
@@ -1382,46 +1408,40 @@ class ibpkeyRecords(semanageRecords):
 
         (k, subnet_prefix, low, high) = self.__genkey(pkey, subnet_prefix)
 
-        (rc, exists) = semanage_ibpkey_exists(self.sh, k)
-        if rc < 0:
-            raise ValueError(_("Could not check if ibpkey %s/%s is defined") % (subnet_prefix, pkey))
-        if exists:
-            raise ValueError(_("ibpkey %s/%s already defined") % (subnet_prefix, pkey))
-
         (rc, p) = semanage_ibpkey_create(self.sh)
         if rc < 0:
-            raise ValueError(_("Could not create ibpkey for %s/%s") % (subnet_prefix, pkey))
+            raise ValueError(_("Could not create ibpkey for {subnet_prefix}/{pkey}").format(subnet_prefix=subnet_prefix, pkey=pkey))
 
         semanage_ibpkey_set_subnet_prefix(self.sh, p, subnet_prefix)
         semanage_ibpkey_set_range(p, low, high)
         (rc, con) = semanage_context_create(self.sh)
         if rc < 0:
-            raise ValueError(_("Could not create context for %s/%s") % (subnet_prefix, pkey))
+            raise ValueError(_("Could not create context for {subnet_prefix}/{pkey}").format(subnet_prefix=subnet_prefix, pkey=pkey))
 
         rc = semanage_context_set_user(self.sh, con, "system_u")
         if rc < 0:
-            raise ValueError(_("Could not set user in ibpkey context for %s/%s") % (subnet_prefix, pkey))
+            raise ValueError(_("Could not set user in ibpkey context for {subnet_prefix}/{pkey}").format(subnet_prefix=subnet_prefix, pkey=pkey))
 
         rc = semanage_context_set_role(self.sh, con, "object_r")
         if rc < 0:
-            raise ValueError(_("Could not set role in ibpkey context for %s/%s") % (subnet_prefix, pkey))
+            raise ValueError(_("Could not set role in ibpkey context for {subnet_prefix}/{pkey}").format(subnet_prefix=subnet_prefix, pkey=pkey))
 
         rc = semanage_context_set_type(self.sh, con, type)
         if rc < 0:
-            raise ValueError(_("Could not set type in ibpkey context for %s/%s") % (subnet_prefix, pkey))
+            raise ValueError(_("Could not set type in ibpkey context for {subnet_prefix}/{pkey}").format(subnet_prefix=subnet_prefix, pkey=pkey))
 
         if (is_mls_enabled == 1) and (serange != ""):
             rc = semanage_context_set_mls(self.sh, con, serange)
             if rc < 0:
-                raise ValueError(_("Could not set mls fields in ibpkey context for %s/%s") % (subnet_prefix, pkey))
+                raise ValueError(_("Could not set mls fields in ibpkey context for {subnet_prefix}/{pkey}").format(subnet_prefix=subnet_prefix, pkey=pkey))
 
         rc = semanage_ibpkey_set_con(self.sh, p, con)
         if rc < 0:
-            raise ValueError(_("Could not set ibpkey context for %s/%s") % (subnet_prefix, pkey))
+            raise ValueError(_("Could not set ibpkey context for {subnet_prefix}/{pkey}").format(subnet_prefix=subnet_prefix, pkey=pkey))
 
         rc = semanage_ibpkey_modify_local(self.sh, k, p)
         if rc < 0:
-            raise ValueError(_("Could not add ibpkey %s/%s") % (subnet_prefix, pkey))
+            raise ValueError(_("Could not add ibpkey {subnet_prefix}/{pkey}").format(subnet_prefix=subnet_prefix, pkey=pkey))
 
         semanage_context_free(con)
         semanage_ibpkey_key_free(k)
@@ -1429,8 +1449,22 @@ class ibpkeyRecords(semanageRecords):
 
     def add(self, pkey, subnet_prefix, serange, type):
         self.begin()
-        self.__add(pkey, subnet_prefix, serange, type)
+        if self.__exists(pkey, subnet_prefix):
+            print(_("ibpkey {subnet_prefix}/{pkey} already defined, modifying instead").format(subnet_prefix=subnet_prefix, pkey=pkey))
+            self.__modify(pkey, subnet_prefix, serange, type)
+        else:
+            self.__add(pkey, subnet_prefix, serange, type)
         self.commit()
+
+    def __exists(self, pkey, subnet_prefix):
+        (k, subnet_prefix, low, high) = self.__genkey(pkey, subnet_prefix)
+
+        (rc, exists) = semanage_ibpkey_exists(self.sh, k)
+        if rc < 0:
+            raise ValueError(_("Could not check if ibpkey {subnet_prefix}/{pkey} is defined").formnat(subnet_prefix=subnet_prefix, pkey=pkey))
+        semanage_ibpkey_key_free(k)
+
+        return exists
 
     def __modify(self, pkey, subnet_prefix, serange, setype):
         if serange == "" and setype == "":
@@ -1448,13 +1482,13 @@ class ibpkeyRecords(semanageRecords):
 
         (rc, exists) = semanage_ibpkey_exists(self.sh, k)
         if rc < 0:
-            raise ValueError(_("Could not check if ibpkey %s/%s is defined") % (subnet_prefix, pkey))
+            raise ValueError(_("Could not check if ibpkey {subnet_prefix}/{pkey} is defined").format(subnet_prefix=subnet_prefix, pkey=pkey))
         if not exists:
-            raise ValueError(_("ibpkey %s/%s is not defined") % (subnet_prefix, pkey))
+            raise ValueError(_("ibpkey {subnet_prefix}/{pkey} is not defined").format(subnet_prefix=subnet_prefix, pkey=pkey))
 
         (rc, p) = semanage_ibpkey_query(self.sh, k)
         if rc < 0:
-            raise ValueError(_("Could not query ibpkey %s/%s") % (subnet_prefix, pkey))
+            raise ValueError(_("Could not query ibpkey {subnet_prefix}/{pkey}").format(subnet_prefix=subnet_prefix, pkey=pkey))
 
         con = semanage_ibpkey_get_con(p)
 
@@ -1465,7 +1499,7 @@ class ibpkeyRecords(semanageRecords):
 
         rc = semanage_ibpkey_modify_local(self.sh, k, p)
         if rc < 0:
-            raise ValueError(_("Could not modify ibpkey %s/%s") % (subnet_prefix, pkey))
+            raise ValueError(_("Could not modify ibpkey {subnet_prefix}/{pkey}").format(subnet_prefix=subnet_prefix, pkey=pkey))
 
         semanage_ibpkey_key_free(k)
         semanage_ibpkey_free(p)
@@ -1502,19 +1536,19 @@ class ibpkeyRecords(semanageRecords):
         (k, subnet_prefix, low, high) = self.__genkey(pkey, subnet_prefix)
         (rc, exists) = semanage_ibpkey_exists(self.sh, k)
         if rc < 0:
-            raise ValueError(_("Could not check if ibpkey %s/%s is defined") % (subnet_prefix, pkey))
+            raise ValueError(_("Could not check if ibpkey {subnet_prefix}/{pkey} is defined").format(subnet_prefix=subnet_prefix, pkey=pkey))
         if not exists:
-            raise ValueError(_("ibpkey %s/%s is not defined") % (subnet_prefix, pkey))
+            raise ValueError(_("ibpkey {subnet_prefix}/{pkey} is not defined").format(subnet_prefix=subnet_prefix, pkey=pkey))
 
         (rc, exists) = semanage_ibpkey_exists_local(self.sh, k)
         if rc < 0:
-            raise ValueError(_("Could not check if ibpkey %s/%s is defined") % (subnet_prefix, pkey))
+            raise ValueError(_("Could not check if ibpkey {subnet_prefix}/{pkey} is defined").format(subnet_prefix=subnet_prefix, pkey=pkey))
         if not exists:
-            raise ValueError(_("ibpkey %s/%s is defined in policy, cannot be deleted") % (subnet_prefix, pkey))
+            raise ValueError(_("ibpkey {subnet_prefix}/{pkey} is defined in policy, cannot be deleted").format(subnet_prefix=subnet_prefix, pkey=pkey))
 
         rc = semanage_ibpkey_del_local(self.sh, k)
         if rc < 0:
-            raise ValueError(_("Could not delete ibpkey %s/%s") % (subnet_prefix, pkey))
+            raise ValueError(_("Could not delete ibpkey {subnet_prefix}/{pkey}").format(subnet_prefix=subnet_prefix, pkey=pkey))
 
         semanage_ibpkey_key_free(k)
 
@@ -1617,7 +1651,7 @@ class ibendportRecords(semanageRecords):
 
         (rc, k) = semanage_ibendport_key_create(self.sh, ibdev_name, port)
         if rc < 0:
-            raise ValueError(_("Could not create a key for ibendport %s/%s") % (ibdev_name, ibendport))
+            raise ValueError(_("Could not create a key for ibendport {ibdev_name}/{ibendport}").format(ibdev_name=ibdev_name, ibendport=ibendport))
         return (k, ibdev_name, port)
 
     def __add(self, ibendport, ibdev_name, serange, type):
@@ -1636,46 +1670,40 @@ class ibendportRecords(semanageRecords):
             raise ValueError(_("Type %s is invalid, must be an ibendport type") % type)
         (k, ibendport, port) = self.__genkey(ibendport, ibdev_name)
 
-        (rc, exists) = semanage_ibendport_exists(self.sh, k)
-        if rc < 0:
-            raise ValueError(_("Could not check if ibendport %s/%s is defined") % (ibdev_name, port))
-        if exists:
-            raise ValueError(_("ibendport %s/%s already defined") % (ibdev_name, port))
-
         (rc, p) = semanage_ibendport_create(self.sh)
         if rc < 0:
-            raise ValueError(_("Could not create ibendport for %s/%s") % (ibdev_name, port))
+            raise ValueError(_("Could not create ibendport for {ibdev_name}/{port}").format(ibdev_name=ibdev_name, port=port))
 
         semanage_ibendport_set_ibdev_name(self.sh, p, ibdev_name)
         semanage_ibendport_set_port(p, port)
         (rc, con) = semanage_context_create(self.sh)
         if rc < 0:
-            raise ValueError(_("Could not create context for %s/%s") % (ibdev_name, port))
+            raise ValueError(_("Could not create context for {ibendport}/{port}").format(ibdev_name=ibdev_name, port=port))
 
         rc = semanage_context_set_user(self.sh, con, "system_u")
         if rc < 0:
-            raise ValueError(_("Could not set user in ibendport context for %s/%s") % (ibdev_name, port))
+            raise ValueError(_("Could not set user in ibendport context for {ibdev_name}/{port}").format(ibdev_name=ibdev_name, port=port))
 
         rc = semanage_context_set_role(self.sh, con, "object_r")
         if rc < 0:
-            raise ValueError(_("Could not set role in ibendport context for %s/%s") % (ibdev_name, port))
+            raise ValueError(_("Could not set role in ibendport context for {ibdev_name}/{port}").format(ibdev_name=ibdev_name, port=port))
 
         rc = semanage_context_set_type(self.sh, con, type)
         if rc < 0:
-            raise ValueError(_("Could not set type in ibendport context for %s/%s") % (ibdev_name, port))
+            raise ValueError(_("Could not set type in ibendport context for {ibdev_name}/{port}").format(ibdev_name=ibdev_name, port=port))
 
         if (is_mls_enabled == 1) and (serange != ""):
             rc = semanage_context_set_mls(self.sh, con, serange)
             if rc < 0:
-                raise ValueError(_("Could not set mls fields in ibendport context for %s/%s") % (ibdev_name, port))
+                raise ValueError(_("Could not set mls fields in ibendport context for {ibdev_name}/{port}").format(ibdev_name=ibdev_name, port=port))
 
         rc = semanage_ibendport_set_con(self.sh, p, con)
         if rc < 0:
-            raise ValueError(_("Could not set ibendport context for %s/%s") % (ibdev_name, port))
+            raise ValueError(_("Could not set ibendport context for {ibdev_name}/{port}").format(ibdev_name=ibdev_name, port=port))
 
         rc = semanage_ibendport_modify_local(self.sh, k, p)
         if rc < 0:
-            raise ValueError(_("Could not add ibendport %s/%s") % (ibdev_name, port))
+            raise ValueError(_("Could not add ibendport {ibdev_name}/{port}").format(ibdev_name=ibdev_name, port=port))
 
         semanage_context_free(con)
         semanage_ibendport_key_free(k)
@@ -1683,8 +1711,22 @@ class ibendportRecords(semanageRecords):
 
     def add(self, ibendport, ibdev_name, serange, type):
         self.begin()
-        self.__add(ibendport, ibdev_name, serange, type)
+        if self.__exists(ibendport, ibdev_name):
+            print(_("ibendport {ibdev_name}/{port} already defined, modifying instead").format(ibdev_name=ibdev_name, port=port))
+            self.__modify(ibendport, ibdev_name, serange, type)
+        else:
+            self.__add(ibendport, ibdev_name, serange, type)
         self.commit()
+
+    def __exists(self, ibendport, ibdev_name):
+        (k, ibendport, port) = self.__genkey(ibendport, ibdev_name)
+
+        (rc, exists) = semanage_ibendport_exists(self.sh, k)
+        if rc < 0:
+            raise ValueError(_("Could not check if ibendport {ibdev_name}/{port} is defined").format(ibdev_name=ibdev_name, port=port))
+        semanage_ibendport_key_free(k)
+
+        return exists
 
     def __modify(self, ibendport, ibdev_name, serange, setype):
         if serange == "" and setype == "":
@@ -1702,13 +1744,13 @@ class ibendportRecords(semanageRecords):
 
         (rc, exists) = semanage_ibendport_exists(self.sh, k)
         if rc < 0:
-            raise ValueError(_("Could not check if ibendport %s/%s is defined") % (ibdev_name, ibendport))
+            raise ValueError(_("Could not check if ibendport {ibdev_name}/{ibendport} is defined").format(ibdev_name=ibdev_name, ibendport=ibendport))
         if not exists:
-            raise ValueError(_("ibendport %s/%s is not defined") % (ibdev_name, ibendport))
+            raise ValueError(_("ibendport {ibdev_name}/{ibendport} is not defined").format(ibdev_name=ibdev_name, ibendport=ibendport))
 
         (rc, p) = semanage_ibendport_query(self.sh, k)
         if rc < 0:
-            raise ValueError(_("Could not query ibendport %s/%s") % (ibdev_name, ibendport))
+            raise ValueError(_("Could not query ibendport {ibdev_name}/{ibendport}").format(ibdev_name=ibdev_name, ibendport=ibendport))
 
         con = semanage_ibendport_get_con(p)
 
@@ -1719,7 +1761,7 @@ class ibendportRecords(semanageRecords):
 
         rc = semanage_ibendport_modify_local(self.sh, k, p)
         if rc < 0:
-            raise ValueError(_("Could not modify ibendport %s/%s") % (ibdev_name, ibendport))
+            raise ValueError(_("Could not modify ibendport {ibdev_name}/{ibendport}").format(ibdev_name=ibdev_name, ibendport=ibendport))
 
         semanage_ibendport_key_free(k)
         semanage_ibendport_free(p)
@@ -1741,11 +1783,11 @@ class ibendportRecords(semanageRecords):
             port = semanage_ibendport_get_port(ibendport)
             (k, ibdev_name, port) = self.__genkey(str(port), ibdev_name)
             if rc < 0:
-                raise ValueError(_("Could not create a key for %s/%d") % (ibdevname, port))
+                raise ValueError(_("Could not create a key for {ibdev_name}/{port}").format(ibdev_name=ibdev_name, port=port))
 
             rc = semanage_ibendport_del_local(self.sh, k)
             if rc < 0:
-                raise ValueError(_("Could not delete the ibendport %s/%d") % (ibdev_name, port))
+                raise ValueError(_("Could not delete the ibendport {ibdev_name}/{port}").format(ibdev_name=ibdev_name, port=port))
             semanage_ibendport_key_free(k)
 
         self.commit()
@@ -1754,19 +1796,19 @@ class ibendportRecords(semanageRecords):
         (k, ibdev_name, port) = self.__genkey(ibendport, ibdev_name)
         (rc, exists) = semanage_ibendport_exists(self.sh, k)
         if rc < 0:
-            raise ValueError(_("Could not check if ibendport %s/%s is defined") % (ibdev_name, ibendport))
+            raise ValueError(_("Could not check if ibendport {ibdev_name}/{ibendport} is defined").format(ibdev_name=ibdev_name, ibendport=ibendport))
         if not exists:
-            raise ValueError(_("ibendport %s/%s is not defined") % (ibdev_name, ibendport))
+            raise ValueError(_("ibendport {ibdev_name}/{ibendport} is not defined").format(ibdev_name=ibdev_name, ibendport=ibendport))
 
         (rc, exists) = semanage_ibendport_exists_local(self.sh, k)
         if rc < 0:
-            raise ValueError(_("Could not check if ibendport %s/%s is defined") % (ibdev_name, ibendport))
+            raise ValueError(_("Could not check if ibendport {ibdev_name}/{ibendport} is defined").format(ibdev_name=ibdev_name, ibendport=ibendport))
         if not exists:
-            raise ValueError(_("ibendport %s/%s is defined in policy, cannot be deleted") % (ibdev_name, ibendport))
+            raise ValueError(_("ibendport {ibdev_name}/{ibendport} is defined in policy, cannot be deleted").format(ibdev_name=ibdev_name, ibendport=ibendport))
 
         rc = semanage_ibendport_del_local(self.sh, k)
         if rc < 0:
-            raise ValueError(_("Could not delete ibendport %s/%s") % (ibdev_name, ibendport))
+            raise ValueError(_("Could not delete ibendport {ibdev_name}/{ibendport}").format(ibdev_name=ibdev_name, ibendport=ibendport))
 
         semanage_ibendport_key_free(k)
 
@@ -1907,12 +1949,6 @@ class nodeRecords(semanageRecords):
         if rc < 0:
             raise ValueError(_("Could not create key for %s") % addr)
 
-        (rc, exists) = semanage_node_exists(self.sh, k)
-        if rc < 0:
-            raise ValueError(_("Could not check if addr %s is defined") % addr)
-        if exists:
-            raise ValueError(_("Addr %s already defined") % addr)
-
         (rc, node) = semanage_node_create(self.sh)
         if rc < 0:
             raise ValueError(_("Could not create addr for %s") % addr)
@@ -1960,8 +1996,26 @@ class nodeRecords(semanageRecords):
 
     def add(self, addr, mask, proto, serange, ctype):
         self.begin()
-        self.__add(addr, mask, proto, serange, ctype)
+        if self.__exists(addr, mask, proto):
+            print(_("Addr %s already defined, modifying instead") % addr)
+            self.__modify(addr, mask, proto, serange, ctype)
+        else:
+            self.__add(addr, mask, proto, serange, ctype)
         self.commit()
+
+    def __exists(self, addr, mask, proto):
+        addr, mask, proto, audit_proto = self.validate(addr, mask, proto)
+
+        (rc, k) = semanage_node_key_create(self.sh, addr, mask, proto)
+        if rc < 0:
+            raise ValueError(_("Could not create key for %s") % addr)
+
+        (rc, exists) = semanage_node_exists(self.sh, k)
+        if rc < 0:
+            raise ValueError(_("Could not check if addr %s is defined") % addr)
+        semanage_node_key_free(k)
+
+        return exists
 
     def __modify(self, addr, mask, proto, serange, setype):
         addr, mask, proto, audit_proto = self.validate(addr, mask, proto)
@@ -2116,12 +2170,6 @@ class interfaceRecords(semanageRecords):
         if rc < 0:
             raise ValueError(_("Could not create key for %s") % interface)
 
-        (rc, exists) = semanage_iface_exists(self.sh, k)
-        if rc < 0:
-            raise ValueError(_("Could not check if interface %s is defined") % interface)
-        if exists:
-            raise ValueError(_("Interface %s already defined") % interface)
-
         (rc, iface) = semanage_iface_create(self.sh)
         if rc < 0:
             raise ValueError(_("Could not create interface for %s") % interface)
@@ -2168,8 +2216,24 @@ class interfaceRecords(semanageRecords):
 
     def add(self, interface, serange, ctype):
         self.begin()
-        self.__add(interface, serange, ctype)
+        if self.__exists(interface):
+            print(_("Interface %s already defined, modifying instead") % interface)
+            self.__modify(interface, serange, ctype)
+        else:
+            self.__add(interface, serange, ctype)
         self.commit()
+
+    def __exists(self, interface):
+        (rc, k) = semanage_iface_key_create(self.sh, interface)
+        if rc < 0:
+            raise ValueError(_("Could not create key for %s") % interface)
+
+        (rc, exists) = semanage_iface_exists(self.sh, k)
+        if rc < 0:
+            raise ValueError(_("Could not check if interface %s is defined") % interface)
+        semanage_iface_key_free(k)
+
+        return exists
 
     def __modify(self, interface, serange, setype):
         if serange == "" and setype == "":
@@ -2358,7 +2422,13 @@ class fcontextRecords(semanageRecords):
             raise ValueError(_("Substitute %s is not valid. Substitute is not allowed to end with '/'") % substitute)
 
         if target in self.equiv.keys():
-            raise ValueError(_("Equivalence class for %s already exists") % target)
+            print(_("Equivalence class for %s already exists, modifying instead") % target)
+            self.equiv[target] = substitute
+            self.equal_ind = True
+            self.mylog.log_change("resrc=fcontext op=modify-equal %s %s" % (audit.audit_encode_nv_string("sglob", target, 0), audit.audit_encode_nv_string("tglob", substitute, 0)))
+            self.commit()
+            return
+
         self.validate(target)
 
         for fdict in (self.equiv, self.equiv_dist):
@@ -2434,18 +2504,6 @@ class fcontextRecords(semanageRecords):
         if rc < 0:
             raise ValueError(_("Could not create key for %s") % target)
 
-        (rc, exists) = semanage_fcontext_exists(self.sh, k)
-        if rc < 0:
-            raise ValueError(_("Could not check if file context for %s is defined") % target)
-
-        if not exists:
-            (rc, exists) = semanage_fcontext_exists_local(self.sh, k)
-            if rc < 0:
-                raise ValueError(_("Could not check if file context for %s is defined") % target)
-
-        if exists:
-            raise ValueError(_("File context for %s already defined") % target)
-
         (rc, fcontext) = semanage_fcontext_create(self.sh)
         if rc < 0:
             raise ValueError(_("Could not create file context for %s") % target)
@@ -2484,8 +2542,29 @@ class fcontextRecords(semanageRecords):
 
     def add(self, target, type, ftype="", serange="", seuser="system_u"):
         self.begin()
-        self.__add(target, type, ftype, serange, seuser)
+        if self.__exists(target, ftype):
+            print(_("File context for %s already defined, modifying instead") % target)
+            self.__modify(target, type, ftype, serange, seuser)
+        else:
+            self.__add(target, type, ftype, serange, seuser)
         self.commit()
+
+    def __exists(self, target, ftype):
+        (rc, k) = semanage_fcontext_key_create(self.sh, target, file_types[ftype])
+        if rc < 0:
+            raise ValueError(_("Could not create key for %s") % target)
+
+        (rc, exists) = semanage_fcontext_exists(self.sh, k)
+        if rc < 0:
+            raise ValueError(_("Could not check if file context for %s is defined") % target)
+
+        if not exists:
+            (rc, exists) = semanage_fcontext_exists_local(self.sh, k)
+            if rc < 0:
+                raise ValueError(_("Could not check if file context for %s is defined") % target)
+        semanage_fcontext_key_free(k)
+
+        return exists
 
     def __modify(self, target, setype, ftype, serange, seuser):
         if serange == "" and setype == "" and seuser == "":
@@ -2658,7 +2737,7 @@ class fcontextRecords(semanageRecords):
     def customized(self):
         l = []
         fcon_dict = self.get_all(True)
-        for k in sorted(fcon_dict.keys()):
+        for k in fcon_dict.keys():
             if fcon_dict[k]:
                 if fcon_dict[k][3]:
                     l.append("-a -f %s -t %s -r '%s' '%s'" % (file_type_str_to_option[k[1]], fcon_dict[k][2], fcon_dict[k][3], k[0]))
@@ -2675,7 +2754,12 @@ class fcontextRecords(semanageRecords):
         if len(fcon_dict) != 0:
             if heading:
                 print("%-50s %-18s %s\n" % (_("SELinux fcontext"), _("type"), _("Context")))
-            for k in sorted(fcon_dict.keys()):
+            # do not sort local customizations since they are evaluated based on the order they where added in
+            if locallist:
+                fkeys = fcon_dict.keys()
+            else:
+                fkeys = sorted(fcon_dict.keys())
+            for k in fkeys:
                 if fcon_dict[k]:
                     if is_mls_enabled:
                         print("%-50s %-18s %s:%s:%s:%s " % (k[0], k[1], fcon_dict[k][0], fcon_dict[k][1], fcon_dict[k][2], translate(fcon_dict[k][3], False)))
@@ -2765,7 +2849,7 @@ class booleanRecords(semanageRecords):
                 try:
                     boolname, val = b.split("=")
                 except ValueError:
-                    raise ValueError(_("Bad format %s: Record %s" % (name, b)))
+                    raise ValueError(_("Bad format {filename}: Record {record}").format(filename=name, record=b))
                 self.__mod(boolname.strip(), val.strip())
             fd.close()
         else:

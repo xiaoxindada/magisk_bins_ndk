@@ -63,7 +63,7 @@ struct selabel_digest {
 };
 
 extern int digest_add_specfile(struct selabel_digest *digest, FILE *fp,
-						    char *from_addr,
+						    const char *from_addr,
 						    size_t buf_len,
 						    const char *path);
 extern void digest_gen_hash(struct selabel_digest *digest);
@@ -98,8 +98,8 @@ struct selabel_handle {
 						    const char *key,
 						    const char **aliases,
 						    int type);
-	enum selabel_cmp_result (*func_cmp)(struct selabel_handle *h1,
-					    struct selabel_handle *h2);
+	enum selabel_cmp_result (*func_cmp)(const struct selabel_handle *h1,
+					    const struct selabel_handle *h2);
 
 	/* supports backend-specific state information */
 	void *data;
@@ -120,8 +120,7 @@ struct selabel_handle {
  * Validation function
  */
 extern int
-selabel_validate(struct selabel_handle *rec,
-		 struct selabel_lookup_rec *contexts) ;
+selabel_validate(struct selabel_lookup_rec *contexts);
 
 /*
  * Compatibility support
@@ -138,7 +137,7 @@ extern void __attribute__ ((format(printf, 1, 2)))
 	} while (0)
 
 extern int
-compat_validate(struct selabel_handle *rec,
+compat_validate(const struct selabel_handle *rec,
 		struct selabel_lookup_rec *contexts,
 		const char *path, unsigned lineno) ;
 

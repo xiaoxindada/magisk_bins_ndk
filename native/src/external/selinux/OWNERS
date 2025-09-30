@@ -1,3 +1,3 @@
-alanstokes@google.com
 jeffv@google.com
 tweek@google.com
+include platform/system/core:/janitors/OWNERS #{LAST_RESORT_SUGGESTION}

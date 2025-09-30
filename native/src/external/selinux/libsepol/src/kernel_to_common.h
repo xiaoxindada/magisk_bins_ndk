@@ -13,33 +13,33 @@
 // initial sid names aren't actually stored in the pp files, need to a have
 // a mapping, taken from the linux kernel
 static const char * const selinux_sid_to_str[] = {
-	"null",
+	NULL,
 	"kernel",
 	"security",
 	"unlabeled",
-	"fs",
+	NULL,
 	"file",
-	"file_labels",
+	NULL,
 	"init",
 	"any_socket",
 	"port",
 	"netif",
 	"netmsg",
 	"node",
-	"igmp_packet",
-	"icmp_socket",
-	"tcp_socket",
-	"sysctl_modprobe",
-	"sysctl",
-	"sysctl_fs",
-	"sysctl_kernel",
-	"sysctl_net",
-	"sysctl_net_unix",
-	"sysctl_vm",
-	"sysctl_dev",
-	"kmod",
-	"policy",
-	"scmp_packet",
+	NULL,
+	NULL,
+	NULL,
+	NULL,
+	NULL,
+	NULL,
+	NULL,
+	NULL,
+	NULL,
+	NULL,
+	NULL,
+	NULL,
+	NULL,
+	NULL,
 	"devnull",
 };
 
@@ -83,21 +83,19 @@ struct strs {
 	size_t size;
 };
 
-__attribute__ ((format(printf, 1, 2)))
-void sepol_log_err(const char *fmt, ...);
 void sepol_indent(FILE *out, int indent);
 __attribute__ ((format(printf, 2, 3)))
 void sepol_printf(FILE *out, const char *fmt, ...);
 
-__attribute__ ((format(printf, 1, 3)))
-char *create_str(const char *fmt, int num, ...);
+__attribute__ ((format(printf, 1, 2)))
+char *create_str(const char *fmt, ...);
 
 int strs_init(struct strs **strs, size_t size);
 void strs_destroy(struct strs **strs);
 void strs_free_all(struct strs *strs);
 int strs_add(struct strs *strs, char *s);
-__attribute__ ((format(printf, 2, 4)))
-int strs_create_and_add(struct strs *strs, const char *fmt, int num, ...);
+__attribute__ ((format(printf, 2, 3)))
+int strs_create_and_add(struct strs *strs, const char *fmt, ...);
 char *strs_remove_last(struct strs *strs);
 int strs_add_at_index(struct strs *strs, char *s, size_t index);
 char *strs_read_at_index(struct strs *strs, size_t index);

@@ -1,4 +1,4 @@
-/* Author : Stephen Smalley, <sds@tycho.nsa.gov> */
+/* Author : Stephen Smalley, <stephen.smalley.work@gmail.com> */
 
 /*
  * Updated: Joshua Brindle <jbrindle@tresys.com>
@@ -217,7 +217,7 @@ typedef struct user_datum {
 typedef struct level_datum {
 	mls_level_t *level;	/* sensitivity and associated categories */
 	unsigned char isalias;	/* is this sensitivity an alias for another? */
-	unsigned char defined;
+	unsigned char notdefined; /* Only set to non-zero in checkpolicy */
 } level_datum_t;
 
 /* Category attributes */
@@ -259,6 +259,7 @@ typedef struct class_perm_node {
 typedef struct av_extended_perms {
 #define AVRULE_XPERMS_IOCTLFUNCTION	0x01
 #define AVRULE_XPERMS_IOCTLDRIVER	0x02
+#define AVRULE_XPERMS_NLMSG	0x03
 	uint8_t specified;
 	uint8_t driver;
 	/* 256 bits of permissions */
@@ -285,7 +286,8 @@ typedef struct avrule {
 #define AVRULE_XPERMS	(AVRULE_XPERMS_ALLOWED | AVRULE_XPERMS_AUDITALLOW | \
 				AVRULE_XPERMS_DONTAUDIT | AVRULE_XPERMS_NEVERALLOW)
 	uint32_t specified;
-#define RULE_SELF 1
+#define RULE_SELF       (1U << 0)
+#define RULE_NOTSELF    (1U << 1)
 	uint32_t flags;
 	type_set_t stypes;
 	type_set_t ttypes;

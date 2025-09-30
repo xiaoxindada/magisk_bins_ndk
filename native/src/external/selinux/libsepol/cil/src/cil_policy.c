@@ -1008,13 +1008,13 @@ static void cil_validatetrans_to_policy(FILE *out, struct cil_db *db, struct cil
 static void cil_bools_to_policy(FILE *out, struct cil_list *bools)
 {
 	struct cil_list_item *i1;
-	struct cil_bool *bool;
+	struct cil_bool *boolean;
 	const char *value;
 
 	cil_list_for_each(i1, bools) {
-		bool = i1->data;
-		value = bool->value ? "true" : "false";
-		fprintf(out, "bool %s %s;\n", bool->datum.fqn, value);
+		boolean = i1->data;
+		value = boolean->value ? "true" : "false";
+		fprintf(out, "bool %s %s;\n", boolean->datum.fqn, value);
 	}
 }
 
@@ -1112,6 +1112,8 @@ static void cil_xperms_to_policy(FILE *out, struct cil_permissionx *permx)
 
 	if (permx->kind == CIL_PERMX_KIND_IOCTL) {
 		kind = "ioctl";
+	} else if (permx->kind == CIL_PERMX_KIND_NLMSG) {
+		kind = "nlmsg";
 	} else {
 		kind = "???";
 	}
@@ -1256,8 +1258,7 @@ static void cil_type_rule_to_policy(FILE *out, struct cil_type_rule *rule)
 
 static void cil_nametypetransition_to_policy(FILE *out, struct cil_nametypetransition *trans)
 {
-	struct cil_symtab_datum *src, *tgt, *res;
-	struct cil_name *name;
+	struct cil_symtab_datum *src, *tgt, *name, *res;
 	struct cil_list *class_list;
 	struct cil_list_item *i1;
 
@@ -1268,7 +1269,7 @@ static void cil_nametypetransition_to_policy(FILE *out, struct cil_nametypetrans
 
 	class_list = cil_expand_class(trans->obj);
 	cil_list_for_each(i1, class_list) {
-		fprintf(out, "type_transition %s %s : %s %s \"%s\";\n", src->fqn, tgt->fqn, DATUM(i1->data)->fqn, res->fqn, name->datum.fqn);
+		fprintf(out, "type_transition %s %s : %s %s \"%s\";\n", src->fqn, tgt->fqn, DATUM(i1->data)->fqn, res->fqn, name->fqn);
 	}
 	cil_list_destroy(&class_list, CIL_FALSE);
 }
@@ -1437,12 +1438,12 @@ static int __cil_te_rules_to_policy_helper(struct cil_tree_node *node, uint32_t 
 		*finished = CIL_TREE_SKIP_HEAD;
 		break;
 	case CIL_BOOLEANIF: {
-		struct cil_booleanif *bool = node->data;
+		struct cil_booleanif *boolean = node->data;
 		struct cil_tree_node *n;
 		struct cil_condblock *cb;
 
 		fprintf(args->out, "if ");
-		cil_cond_expr_to_policy(args->out, bool->datum_expr, CIL_TRUE);
+		cil_cond_expr_to_policy(args->out, boolean->datum_expr, CIL_TRUE);
 		fprintf(args->out," {\n");
 		n = node->cl_head;
 		cb = n != NULL ? n->data : NULL;

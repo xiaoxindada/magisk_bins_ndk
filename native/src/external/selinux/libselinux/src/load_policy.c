@@ -252,7 +252,7 @@ int selinux_init_load_policy(int *enforce)
 		}
 		if (fgets(buf, selinux_page_size, cfg) &&
 		    (tmp = strstr(buf, "enforcing="))) {
-			if (tmp == buf || isspace(*(tmp - 1))) {
+			if (tmp == buf || isspace((unsigned char)*(tmp - 1))) {
 				secmdline =
 				    atoi(tmp + sizeof("enforcing=") - 1);
 			}
@@ -326,7 +326,9 @@ int selinux_init_load_policy(int *enforce)
 
 	if (seconfig == -1) {
 		/* Runtime disable of SELinux. */
+		IGNORE_DEPRECATED_DECLARATION_BEGIN
 		rc = security_disable();
+		IGNORE_DEPRECATED_DECLARATION_END
 		if (rc == 0) {
 			/* Successfully disabled, so umount selinuxfs too. */
 			umount(selinux_mnt);

@@ -13,7 +13,7 @@
 #define FALSE 0
 
 avrule_t *define_cond_compute_type(int which);
-avrule_t *define_cond_pol_list(avrule_t *avlist, avrule_t *stmt);
+avrule_t *define_cond_pol_list(avrule_t *avlist, avrule_t *sl);
 avrule_t *define_cond_te_avtab(int which);
 avrule_t *define_cond_filename_trans(void);
 cond_expr_t *define_cond_expr(uint32_t expr_type, void *arg1, void* arg2);
@@ -38,7 +38,9 @@ int define_genfs_context(int has_type);
 int define_initial_sid_context(void);
 int define_initial_sid(void);
 int define_ipv4_node_context(void);
+int define_ipv4_cidr_node_context(void);
 int define_ipv6_node_context(void);
+int define_ipv6_cidr_node_context(void);
 int define_level(void);
 int define_netif_context(void);
 int define_permissive(void);
@@ -70,8 +72,6 @@ int define_validatetrans(constraint_expr_t *expr);
 int expand_attrib(void);
 int insert_id(const char *id,int push);
 int insert_separator(int push);
-role_datum_t *define_role_dom(role_datum_t *r);
-role_datum_t *merge_roles_dom(role_datum_t *r1,role_datum_t *r2);
 uintptr_t define_cexpr(uint32_t expr_type, uintptr_t arg1, uintptr_t arg2);
 
 #endif /* _POLICY_DEFINE_H_ */

@@ -31,16 +31,16 @@ extern "C" {
 
 extern int add_i_to_a(uint32_t i, uint32_t * cnt, uint32_t ** a);
 
-extern char *sepol_av_to_string(policydb_t * policydbp, uint32_t tclass,
+extern char *sepol_av_to_string(const policydb_t *policydbp, sepol_security_class_t tclass,
 				sepol_access_vector_t av);
 
-char *sepol_extended_perms_to_string(avtab_extended_perms_t *xperms);
+char *sepol_extended_perms_to_string(const avtab_extended_perms_t *xperms);
 
 /*
  * The tokenize function may be used to
  * replace sscanf
  */
-extern int tokenize(char *line_buf, char delim, int num_args, ...);
+extern int tokenize(const char *line_buf, char delim, int num_args, ...);
 
 #ifdef __cplusplus
 }
