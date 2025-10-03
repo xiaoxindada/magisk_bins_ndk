@@ -33,7 +33,7 @@ use std::io::{BufReader, Write};
 use std::os::fd::{AsFd, AsRawFd, IntoRawFd, RawFd};
 use std::os::unix::net::{UCred, UnixListener, UnixStream};
 use std::process::{Command, exit};
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
@@ -130,7 +130,9 @@ impl MagiskD {
                 info!("** zygote restarted");
                 self.prune_su_access();
                 scan_deny_apps();
-                self.zygisk.lock().unwrap().reset(false);
+                if self.zygisk_enabled.load(Ordering::Relaxed) {
+                    self.zygisk.lock().unwrap().reset(false);
+                }
             }
             RequestCode::SQLITE_CMD => {
                 self.db_exec_for_cli(client).ok();
@@ -159,6 +161,7 @@ impl MagiskD {
         .ok();
     }
 
+    #[cfg(feature = "check-client")]
     fn is_client(&self, pid: i32) -> bool {
         let mut buf = cstr::buf::new::<32>();
         write!(buf, "/proc/{pid}/exe").ok();
@@ -167,6 +170,11 @@ impl MagiskD {
         } else {
             false
         }
+    }
+
+    #[cfg(not(feature = "check-client"))]
+    fn is_client(&self, pid: i32) -> bool {
+        true
     }
 
     fn handle_requests(&'static self, mut client: UnixStream) {
