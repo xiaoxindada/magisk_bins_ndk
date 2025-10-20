@@ -1,5 +1,10 @@
 #![allow(clippy::useless_conversion)]
 
+use argh::FromArgs;
+use base::argh;
+use bytemuck::{Pod, Zeroable, from_bytes};
+use num_traits::cast::AsPrimitive;
+use size::{Base, Size, Style};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::{Display, Formatter};
@@ -8,11 +13,6 @@ use std::io::{Cursor, Read, Write};
 use std::mem::size_of;
 use std::process::exit;
 use std::str;
-
-use argh::FromArgs;
-use bytemuck::{Pod, Zeroable, from_bytes};
-use num_traits::cast::AsPrimitive;
-use size::{Base, Size, Style};
 
 use crate::check_env;
 use crate::compress::{get_decoder, get_encoder};
@@ -23,9 +23,10 @@ use base::libc::{
     S_IWOTH, S_IWUSR, S_IXGRP, S_IXOTH, S_IXUSR, dev_t, gid_t, major, makedev, minor, mknod,
     mode_t, uid_t,
 };
+use base::nix::fcntl::OFlag;
 use base::{
     BytesExt, EarlyExitExt, LoggedResult, MappedFile, OptionExt, ResultExt, Utf8CStr, Utf8CStrBuf,
-    WriteExt, cstr, log_err, nix::fcntl::OFlag,
+    WriteExt, cstr, log_err,
 };
 
 #[derive(FromArgs)]
