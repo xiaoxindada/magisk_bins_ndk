@@ -7,7 +7,7 @@
 //! [dtolnay/cxx#235]: https://github.com/dtolnay/cxx/issues/235
 //! [https://github.com/google/autocxx]: https://github.com/google/autocxx
 
-#![doc(html_root_url = "https://docs.rs/cxx-gen/0.7.170")]
+#![doc(html_root_url = "https://docs.rs/cxx-gen/0.7.189")]
 #![deny(missing_docs)]
 #![allow(dead_code)]
 #![cfg_attr(not(check_cfg), allow(unexpected_cfgs))]
@@ -16,6 +16,7 @@
     clippy::default_trait_access,
     clippy::elidable_lifetime_names,
     clippy::enum_glob_use,
+    clippy::expl_impl_clone_on_copy, // https://github.com/rust-lang/rust-clippy/issues/15842
     clippy::inherent_to_string,
     clippy::items_after_statements,
     clippy::match_bool,
@@ -23,9 +24,11 @@
     clippy::match_same_arms,
     clippy::missing_errors_doc,
     clippy::must_use_candidate,
+    clippy::needless_continue,
     clippy::needless_lifetimes,
     clippy::needless_pass_by_value,
     clippy::nonminimal_bool,
+    clippy::precedence,
     clippy::redundant_else,
     clippy::ref_option,
     clippy::similar_names,

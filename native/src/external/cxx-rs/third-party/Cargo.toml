@@ -4,16 +4,17 @@ name = "third-party"
 version = "0.0.0"
 edition = "2021"
 publish = false
-rust-version = "1.77"
+rust-version = "1.82"
 
 [dependencies]
-cc = "1.0.83"
+cc = "1.0.101"
 clap = { version = "4", default-features = false, features = ["error-context", "help", "std", "usage"] }
-codespan-reporting = "0.12"
+codespan-reporting = "0.13.1"
 foldhash = "0.2"
 indexmap = "2.9.0"
 proc-macro2 = { version = "1.0.58", features = ["span-locations"] }
 quote = "1.0.4"
 rustversion = "1"
 scratch = "1"
+serde = { version = "1", features = ["derive"] }
 syn = { version = "2.0.1", features = ["full"] }

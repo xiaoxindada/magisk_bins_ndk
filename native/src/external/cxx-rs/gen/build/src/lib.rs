@@ -44,7 +44,7 @@
 //! $ cxxbridge src/main.rs > path/to/mybridge.cc
 //! ```
 
-#![doc(html_root_url = "https://docs.rs/cxx-build/1.0.170")]
+#![doc(html_root_url = "https://docs.rs/cxx-build/1.0.189")]
 #![cfg_attr(not(check_cfg), allow(unexpected_cfgs))]
 #![allow(
     clippy::cast_sign_loss,
@@ -52,16 +52,19 @@
     clippy::doc_markdown,
     clippy::elidable_lifetime_names,
     clippy::enum_glob_use,
+    clippy::expl_impl_clone_on_copy, // https://github.com/rust-lang/rust-clippy/issues/15842
     clippy::explicit_auto_deref,
     clippy::inherent_to_string,
     clippy::items_after_statements,
     clippy::match_bool,
     clippy::match_like_matches_macro,
     clippy::match_same_arms,
+    clippy::needless_continue,
     clippy::needless_doctest_main,
     clippy::needless_lifetimes,
     clippy::needless_pass_by_value,
     clippy::nonminimal_bool,
+    clippy::precedence,
     clippy::redundant_else,
     clippy::ref_as_ptr,
     clippy::ref_option,
@@ -398,7 +401,9 @@ fn generate_bridge(prj: &Project, build: &mut Build, rust_source_file: &Path) ->
         doxygen: CFG.doxygen,
         ..Opt::default()
     };
-    println!("cargo:rerun-if-changed={}", rust_source_file.display());
+    if !rust_source_file.starts_with(&prj.out_dir) {
+        println!("cargo:rerun-if-changed={}", rust_source_file.display());
+    }
     let generated = gen::generate_from_path(rust_source_file, &opt);
     let ref rel_path = paths::local_relative_path(rust_source_file);
 

@@ -222,11 +222,11 @@ impl ToTokens for Impl {
     fn to_tokens(&self, tokens: &mut TokenStream) {
         let Impl {
             cfg: _,
+            attrs: _,
             impl_token,
             impl_generics,
             negative: _,
             ty,
-            ty_generics: _,
             brace_token,
             negative_token,
         } = self;

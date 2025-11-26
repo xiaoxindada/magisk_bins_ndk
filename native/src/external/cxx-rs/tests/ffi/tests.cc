@@ -13,6 +13,10 @@
 #include <string>
 #include <tuple>
 
+#ifdef __GNUC__
+#pragma GCC diagnostic ignored "-Wshadow"
+#endif
+
 extern "C" void cxx_test_suite_set_correct() noexcept;
 extern "C" tests::R *cxx_test_suite_get_box() noexcept;
 extern "C" bool cxx_test_suite_r_is_correct(const tests::R *) noexcept;
@@ -52,7 +56,7 @@ size_t &Shared::c_method_mut_on_shared() noexcept { return this->z; }
 
 size_t Shared::c_static_method_on_shared() noexcept { return 2025; }
 
-void Array::c_set_array(int32_t val) noexcept {
+void WithArray::c_set_array(int32_t val) noexcept {
   this->a = {val, val, val, val};
 }
 
@@ -619,6 +623,14 @@ extern "C" std::string *cxx_test_suite_get_unique_ptr_string() noexcept {
   return std::unique_ptr<std::string>(new std::string("2020")).release();
 }
 
+const std::vector<uint8_t> &C::c_lifetime_elision_member_fn() const {
+  return this->get_v();
+}
+
+const std::vector<uint8_t> &c_lifetime_elision_fn(const C &c) {
+  return c.get_v();
+}
+
 rust::String C::cOverloadedMethod(int32_t x) const {
   return rust::String(std::to_string(x));
 }
@@ -766,6 +778,8 @@ std::unique_ptr<::F::F> c_return_ns_opaque_ptr() {
   f->f_str = std::string("hello");
   return f;
 }
+
+void R::c_member_function_on_rust_type() const noexcept {}
 
 extern "C" const char *cxx_run_test() noexcept {
 #define STRINGIFY(x) #x
