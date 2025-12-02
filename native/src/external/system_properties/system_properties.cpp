@@ -97,6 +97,19 @@ bool SystemProperties::InitContexts(bool load_default_path) {
       return false;
     }
   }
+
+  appcompat_filename_ = PropertiesFilename(properties_filename_.c_str(), "appcompat_override");
+  appcompat_override_contexts_ = nullptr;
+  if (access(appcompat_filename_.c_str(), F_OK) != -1) {
+    auto* appcompat_contexts = new (appcompat_override_contexts_data_) ContextsSerialized();
+    if (!appcompat_contexts->Initialize(false, appcompat_filename_.c_str(), nullptr, load_default_path)) {
+      // The appcompat folder exists, but initializing it failed
+      return false;
+    } else {
+      appcompat_override_contexts_ = appcompat_contexts;
+    }
+  }
+
   return true;
 }
 
