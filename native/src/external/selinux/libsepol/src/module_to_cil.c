@@ -1196,8 +1196,7 @@ static int avrule_list_to_cil(int indent, struct policydb *pdb, struct avrule *a
 	struct type_set *ts;
 
 	for (avrule = avrule_list; avrule != NULL; avrule = avrule->next) {
-		if ((avrule->specified & (AVRULE_NEVERALLOW|AVRULE_XPERMS_NEVERALLOW)) &&
-		    avrule->source_filename) {
+		if ((avrule->specified & pdb->line_marker_avrules) && avrule->source_filename) {
 			cil_println(0, ";;* lmx %lu %s\n",avrule->source_line, avrule->source_filename);
 		}
 
@@ -1264,8 +1263,7 @@ static int avrule_list_to_cil(int indent, struct policydb *pdb, struct avrule *a
 		names_destroy(&snames, &num_snames);
 		names_destroy(&tnames, &num_tnames);
 
-		if ((avrule->specified & (AVRULE_NEVERALLOW|AVRULE_XPERMS_NEVERALLOW)) &&
-		    avrule->source_filename) {
+		if ((avrule->specified & pdb->line_marker_avrules) && avrule->source_filename) {
 			cil_println(0, ";;* lme\n");
 		}
 	}
@@ -3017,10 +3015,22 @@ static int genfscon_to_cil(struct policydb *pdb)
 	struct genfs *genfs;
 	struct ocontext *ocon;
 	uint32_t sclass;
+	char *name;
+	int wildcard = ebitmap_get_bit(&pdb->policycaps, POLICYDB_CAP_GENFS_SECLABEL_WILDCARD);
+	size_t name_len;
 
 	for (genfs = pdb->genfs; genfs != NULL; genfs = genfs->next) {
 		for (ocon = genfs->head; ocon != NULL; ocon = ocon->next) {
 			sclass = ocon->v.sclass;
+			name = ocon->u.name;
+			name_len = strlen(name);
+			if (wildcard) {
+				if (name_len == 0 || name[name_len - 1] != '*') {
+					ERR(NULL, "genfscon path must end with '*' when genfs_seclabel_wildcard");
+					return -1;
+				}
+				--name_len;
+			}
 			if (sclass) {
 				const char *file_type;
 				const char *class_name = pdb->p_class_val_to_name[sclass-1];
@@ -3041,9 +3051,10 @@ static int genfscon_to_cil(struct policydb *pdb)
 				} else {
 					return -1;
 				}
-				cil_printf("(genfscon %s \"%s\" %s ", genfs->fstype, ocon->u.name, file_type);
+				cil_printf("(genfscon %s \"%.*s\" %s ", genfs->fstype, (int)name_len, name,
+				           file_type);
 			} else {
-				cil_printf("(genfscon %s \"%s\" ", genfs->fstype, ocon->u.name);
+				cil_printf("(genfscon %s \"%.*s\" ", genfs->fstype, (int)name_len, name);
 			}
 			context_to_cil(pdb, &ocon->context[0]);
 			cil_printf(")\n");

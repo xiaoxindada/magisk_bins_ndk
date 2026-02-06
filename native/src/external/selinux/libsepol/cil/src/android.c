@@ -632,12 +632,10 @@ static int __attributize_helper(struct cil_tree_node *node, uint32_t *finished, 
 		rc = SEPOL_ERR;
 		break;
 	case CIL_ROLETYPE:
-		/* Yes, this is needed if we support roletype in non-platform policy.
-		   type_id can be type, typealias or typeattr */
-		rc = cil_attrib_roletype(node, args);
-		if (rc != SEPOL_OK) {
-			goto exit;
-		}
+		/* We shouldn't attributize roletype. system_ext/product public
+		 * types can be missing in GSI, failing to assign roletype to
+		 * such types. That will cause a compilation error for some
+		 * statements like genfscon. */
 		break;
 	case CIL_ROLEATTRIBUTE:
 		/* don't think this is needed, only used for cil_gen_req, and we aren't

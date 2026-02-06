@@ -2121,6 +2121,7 @@ static int __cil_cond_to_policydb_helper(struct cil_tree_node *node, __attribute
 		break;
 	case CIL_CALL:
 	case CIL_TUNABLEIF:
+	case CIL_SRC_INFO:
 		break;
 	default:
 		cil_tree_log(node, CIL_ERR, "Invalid statement within booleanif");
@@ -3641,6 +3642,7 @@ int cil_genfscon_to_policydb(policydb_t *pdb, struct cil_sort *genfscons)
 	uint32_t i = 0;
 	genfs_t *genfs_tail = NULL;
 	ocontext_t *ocon_tail = NULL;
+	int wildcard = ebitmap_get_bit(&pdb->policycaps, POLICYDB_CAP_GENFS_SECLABEL_WILDCARD);
 
 	for (i = 0; i < genfscons->count; i++) {
 		struct cil_genfscon *cil_genfscon = genfscons->array[i];
@@ -3665,7 +3667,15 @@ int cil_genfscon_to_policydb(policydb_t *pdb, struct cil_sort *genfscons)
 
 		ocon_tail = new_ocon;
 
-		new_ocon->u.name = cil_strdup(cil_genfscon->path_str);
+		if (wildcard) {
+			size_t name_len = strlen(cil_genfscon->path_str);
+			new_ocon->u.name = cil_malloc(name_len + 2);
+			memcpy(new_ocon->u.name, cil_genfscon->path_str, name_len);
+			new_ocon->u.name[name_len] = '*';
+			new_ocon->u.name[name_len + 1] = '\0';
+		} else {
+			new_ocon->u.name = cil_strdup(cil_genfscon->path_str);
+		}
 
 		if (cil_genfscon->file_type != CIL_FILECON_ANY) {
 			class_datum_t *class_datum;

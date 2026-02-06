@@ -3852,6 +3852,7 @@ static int __cil_resolve_ast_node_helper(struct cil_tree_node *node, uint32_t *f
 			node->flavor != CIL_CONDBLOCK &&
 			node->flavor != CIL_AVRULE &&
 			node->flavor != CIL_TYPE_RULE &&
+			node->flavor != CIL_SRC_INFO &&
 			node->flavor != CIL_NAMETYPETRANSITION) {
 			rc = SEPOL_ERR;
 		} else if (node->flavor == CIL_AVRULE) {
