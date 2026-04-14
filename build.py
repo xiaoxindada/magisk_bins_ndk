@@ -312,7 +312,7 @@ def setup_ndk():
 def collect_ndk_build():
     for arch in build_abis.keys():
         arch_dir = paths().native/ "libs"/ arch
-        out_dir = paths().native, "out"/ arch
+        out_dir = paths().native / "out"/ arch
         for source in arch_dir.iterdir():
             target = out_dir / source.name
             mv(source, target)
