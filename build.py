@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
+import sys
+
+sys.dont_write_bytecode = True
+from env import *
 import argparse
 import errno
 import glob
-import multiprocessing
 import os
-from pathlib import Path
-import platform
 import sys
 import os.path as op
 import shutil
@@ -14,59 +15,31 @@ import subprocess
 import tarfile
 import urllib.request
 
-# Environment checks
-if not sys.version_info >= (3, 8):
-    error("Requires Python 3.8+")
 
-
-def parse_props(file):
-    props = {}
-    with open(file, "r") as f:
-        for line in [l.strip(" \t\r\n") for l in f]:
-            if line.startswith("#") or len(line) == 0:
-                continue
-            prop = line.split("=")
-            if len(prop) != 2:
-                continue
-            value = prop[1].strip(" \t\r\n")
-            if len(value) == 0:
-                continue
-            props[prop[0].strip(" \t\r\n")] = value
-    return props
-
-
-def load_config():
-    config = {}
-    for key, value in parse_props("magisk_config.prop").items():
-        if key.startswith("magisk."):
-            config[key[7:]] = value
-    return config
-
-
-def error(str):
+def error(str: str):
     print(f"\n\033[41m{str}\033[0m\n")
     sys.exit(1)
 
 
-def mv(source, target):
+def mv(source: Path, target: Path):
     try:
         shutil.move(source, target)
     except:
         pass
 
 
-def cp(source, target):
+def cp(source: Path, target: Path):
     try:
         shutil.copyfile(source, target)
     except:
         pass
 
 
-def cp_rf(source, target):
+def cp_rf(source: Path, target: Path):
     shutil.copytree(source, target, copy_function=cp, dirs_exist_ok=True)
 
 
-def rm(file):
+def rm(file: Path):
     try:
         os.remove(file)
     except OSError as e:
@@ -81,7 +54,7 @@ def rm_on_error(func, path, _):
     os.unlink(path)
 
 
-def rm_rf(path):
+def rm_rf(path: Path):
     shutil.rmtree(path, ignore_errors=True, onerror=rm_on_error)
 
 
@@ -92,22 +65,24 @@ def mkdir(path, mode=0o755):
         pass
 
 
-def mkdir_p(path, mode=0o755):
+def mkdir_p(path: Path, mode=0o755):
     os.makedirs(path, mode, exist_ok=True)
 
 
-def execv(cmd, env=None):
-    return subprocess.run(cmd, stdout=sys.stdout, env=env)
+def execv(cmds: list):
+    out = sys.stdout
+    # Use shell on Windows to support PATHEXT
+    return subprocess.run(cmds, stdout=out, shell=is_windows)
 
 
-def system(cmd):
-    return subprocess.run(cmd, shell=True, stdout=sys.stdout)
+def system(cmds: list):
+    return subprocess.run(cmds, shell=True, stdout=sys.stdout)
 
 
-def cmd_out(cmd):
+def cmd_out(cmds: list):
     return (
         subprocess.run(
-            cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
+            cmds, shell=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
         )
         .stdout.strip()
         .decode("utf-8")
@@ -125,11 +100,7 @@ def sed_i(originStr, targetStr, file):
     mv(f"{file}_tmp", file)
 
 
-LOCALDIR = op.realpath(".")
-cpu_count = multiprocessing.cpu_count()
-os_name = platform.system().lower()
 release = True
-
 # Common constants
 support_abis = {
     "armeabi-v7a": "thumbv7neon-linux-androideabi",
@@ -139,30 +110,15 @@ support_abis = {
     "riscv64": "riscv64-linux-android",
 }
 
-# Environment checks and detection
-is_windows = os.name == "nt"
-EXE_EXT = ".exe" if is_windows else ""
 
 # Global vars
 default_targets = {"magiskboot", "magiskpolicy"}
 support_targets = default_targets | {"resetprop"}
 rust_targets = {"magisk", "magiskinit", "magiskboot", "magiskpolicy"}
 archs = {"armeabi-v7a", "x86", "arm64-v8a", "x86_64"}
-config = load_config()
 triples = map(support_abis.get, archs)
 build_abis = dict(zip(archs, triples))
-
-# Common paths
-ndk_root = Path(LOCALDIR, "ndk")
-native_root = Path(LOCALDIR, "native")
-native_out = native_root / "out"
-ndk_build = ndk_root / "ndk-build"
-rust_bin = ndk_root / "toolchains" / "rust" / "bin"
-llvm_bin = ndk_root / "toolchains" / "llvm" / "prebuilt" / f"{os_name}-x86_64" / "bin"
-native_gen_path = native_out / "generated"
-rust_out = native_out / "rust"
-cargo = ndk_root / "toolchains" / "rust" / "bin" / f"cargo{EXE_EXT}"
-
+config = load_config()
 
 def write_if_diff(file_name, text):
     do_write = True
@@ -182,50 +138,39 @@ def dump_flag_header():
     flag_txt += f'#define MAGISK_VER_CODE     {config["versionCode"]}\n'
     flag_txt += f"#define MAGISK_DEBUG        {0 if release else 1}\n"
 
-    mkdir_p(native_gen_path)
-    write_if_diff(native_gen_path / "flags.h", flag_txt)
+    mkdir_p(paths().native_gen)
+    write_if_diff(paths().native_gen / "flags.h", flag_txt)
 
     rust_flag_txt = f'pub const MAGISK_VERSION: &str = "{config["version"]}";\n'
     rust_flag_txt += f'pub const MAGISK_VER_CODE: i32 = {config["versionCode"]};\n'
-    write_if_diff(native_gen_path / "flags.rs", rust_flag_txt)
+    write_if_diff(paths().native_gen / "flags.rs", rust_flag_txt)
 
 
 def build_native():
-    # Verify NDK install
-    try:
-        with open(Path(ndk_root, "ONDK_VERSION"), "r") as ondk_ver:
-            assert ondk_ver.read().strip(" \t\r\n") == config["ondkVersion"]
-    except:
-        error('Unmatched NDK. Please install/upgrade NDK with "build.py --setup_ndk"')
+    ensure_toolchain()
 
     targets = support_targets
     print("* Building: " + " ".join(targets))
-
-    if sccache := shutil.which("sccache"):
-        os.environ["RUSTC_WRAPPER"] = sccache
-        os.environ["NDK_CCACHE"] = sccache
-        os.environ["CARGO_INCREMENTAL"] = "0"
-    if ccache := shutil.which("ccache"):
-        os.environ["NDK_CCACHE"] = ccache
-
     dump_flag_header()
     build_rust_src(targets)
     build_cpp_src(targets)
     clean_build_src()
-    with open(Path(native_out, "magisk_version.txt"), "w", encoding="utf-8") as f:
+    with open(paths().native_out / "magisk_version.txt", "w", encoding="utf-8") as f:
         f.write(f"magisk.versionCode={config['versionCode']}\n")
 
 
 def build_rust_src(targets: set):
+    ensure_cargo()
+
     targets = targets.copy()
     if "resetprop" in targets:
         targets.add("magisk")
     targets = targets & rust_targets
 
-    os.chdir(native_root / "src")
+    os.chdir(paths().native / "src")
 
     # Start building the build commands
-    cmds = ["build", "-p", ""]
+    cmds = ["cargo", "build", "-p", ""]
     if release:
         cmds.append("-r")
         profile = "release"
@@ -237,18 +182,18 @@ def build_rust_src(targets: set):
         cmds.append(triple)
 
     for tgt in targets:
-        cmds[2] = tgt
-        proc = run_cargo(cmds)
+        cmds[3] = tgt
+        proc = execv(cmds)
         if proc.returncode != 0:
             error("Build rust src failed!")
 
-    os.chdir(Path(LOCALDIR))
+    os.chdir(paths().project_root)
 
     for arch, triple in build_abis.items():
-        arch_out = native_out / arch
+        arch_out = paths().native_out / arch
         arch_out.mkdir(mode=0o755, exist_ok=True)
         for tgt in targets:
-            source = rust_out / triple / profile / f"lib{tgt}.a"
+            source = paths().rust_out / triple / profile / f"lib{tgt}.a"
             target = arch_out / f"lib{tgt}-rs.a"
             mv(source, target)
 
@@ -293,21 +238,23 @@ def build_cpp_src(targets: set):
 
 
 def clean_elf():
-    os.chdir(native_root)
-    cargo_toml = Path(LOCALDIR, "tools", "elf-cleaner", "Cargo.toml")
-    cmds = ["run", "--release", "--manifest-path", cargo_toml]
+    ensure_cargo()
+
+    os.chdir(paths().native)
+    cargo_toml = paths().project_root / "tools" / "elf-cleaner" / "Cargo.toml"
+    cmds = ["cargo", "run", "--release", "--manifest-path", cargo_toml]
     cmds.append("--")
     if "magisk" in default_targets:
         cmds.extend(glob.glob("out/*/magisk"))
     if "magiskpolicy" in default_targets:
         cmds.extend(glob.glob("out/*/magiskpolicy"))
-    run_cargo(cmds)
+    execv(cmds)
 
 
 def clean_build_src():
-    rm_rf(rust_out)
-    rm_rf(native_gen_path)
-    os.chdir(native_root)
+    rm_rf(paths().rust_out)
+    rm_rf(paths().native_gen)
+    os.chdir(paths().native)
     libinit_lds = [l for l in glob.glob("out/*/libinit-ld*")]
     for libinit_ld in libinit_lds:
         rm(libinit_ld)
@@ -317,72 +264,64 @@ def clean_build_src():
 
 
 def setup_ndk():
-    ondk_version = config["ondkVersion"]
     url = f"https://github.com/topjohnwu/ondk/releases/download/{ondk_version}/ondk-{ondk_version}-{os_name}.tar.xz"
     ndk_archive = url.split("/")[-1]
-    ondk_path = Path(LOCALDIR, f"ondk-{ondk_version}")
+    ondk_path = paths().project_root / f"ondk-{ondk_version}"
 
     if (
         not op.exists(ndk_archive)
-        and not op.exists(ndk_root)
-        or op.exists(ndk_root)
-        and open(Path(ndk_root, "ONDK_VERSION")).read().strip(" \t\r\n") != ondk_version
+        and not op.exists(paths().ndk)
+        or op.exists(paths().ndk)
+        and open(paths().ndk / "ONDK_VERSION").read().strip(" \t\r\n") != ondk_version
     ):
         print(f"Downloading and extracting {ndk_archive}")
         with urllib.request.urlopen(url) as response:
             with tarfile.open(mode="r|xz", fileobj=response) as tar:
                 if hasattr(tarfile, "data_filter"):
-                    tar.extractall(LOCALDIR, filter="tar")
+                    tar.extractall(paths().project_root, filter="tar")
                 else:
-                    tar.extractall(LOCALDIR)
+                    tar.extractall(paths().project_root)
     elif op.exists(ndk_archive):
         print(f"Extracting {ndk_archive}")
         with tarfile.open(ndk_archive, mode="r|xz") as tar:
             if hasattr(tarfile, "data_filter"):
-                tar.extractall(LOCALDIR, filter="tar")
+                tar.extractall(paths().project_root, filter="tar")
             else:
-                tar.extractall(LOCALDIR)
+                tar.extractall(paths().project_root)
 
-    rm_rf(ndk_root)
-    mv(ondk_path, ndk_root)
+    rm_rf(paths().ndk)
+    mv(ondk_path, paths().ndk)
 
 
 def collect_ndk_build():
     for arch in build_abis.keys():
-        arch_dir = Path(native_root, "libs", arch)
-        out_dir = Path(native_root, "out", arch)
+        arch_dir = paths().native / "libs" / arch
+        out_dir = paths().native / "out" / arch
         for source in arch_dir.iterdir():
             target = out_dir / source.name
             mv(source, target)
 
 
 def run_ndk_build(cmds: list):
-    os.chdir(native_root)
-    cmds.append("NDK_PROJECT_PATH=.")
-    cmds.append("NDK_APPLICATION_MK=src/Application.mk")
+    os.chdir(paths().native)
+    cmds.append(f"NDK_PROJECT_PATH=.")
+    cmds.append(f"NDK_APPLICATION_MK=src/Application.mk")
     cmds.append(f"APP_ABI={' '.join(build_abis.keys())}")
     cmds.append(f"-j{min(8, cpu_count)}")
     if not release:
         cmds.append("MAGISK_DEBUG=1")
-    proc = execv([ndk_build, *cmds])
+    proc = execv([paths().ndk_build, *cmds])
     if proc.returncode != 0:
         error("Build binary failed!")
-    os.chdir("..")
+    os.chdir(paths().project_root)
 
-
-def run_cargo(cmds):
-    env = os.environ.copy()
-    env["PATH"] = f'{rust_bin}{os.pathsep}{env["PATH"]}'
-    env["CARGO_BUILD_RUSTC"] = str(rust_bin / f"rustc{EXE_EXT}")
-    env["CARGO_BUILD_RUSTFLAGS"] = f"-Z threads={min(8, cpu_count)}"
-    return execv([cargo, *cmds], env)
 
 
 def update_code():
-    os.chdir(LOCALDIR)
-    rm_rf("Magisk")
-    rm_rf("native")
-    rm_rf("tools")
+    os.chdir(paths().project_root)
+    rm_rf(paths().project_root / "Magisk")
+    rm_rf(paths().project_root / "native")
+    rm_rf(paths().project_root / "tools")
     if (
         system(
             "git clone --recurse-submodules https://github.com/topjohnwu/Magisk.git Magisk"
@@ -393,12 +332,14 @@ def update_code():
 
     # Generate magisk_config.prop
     magisk_version = cmd_out(
-        f"cd Magisk && git rev-parse --short=8 HEAD && cd .."
+        "cd Magisk && git rev-parse --short=8 HEAD && cd .."
     ).strip(" \t\r\n")
     ondk_version = None
-    with open(Path("Magisk", "app", "gradle.properties"), "r") as i:
-        with open(Path("Magisk", "build.py"), "r") as b:
-            with open(Path("magisk_config.prop"), "w", encoding="utf-8") as o:
+    with open(paths().project_root / "Magisk" / "app" / "gradle.properties", "r") as i:
+        with open(paths().project_root / "Magisk" / "scripts" / "env.py", "r") as b:
+            with open(
+                paths().project_root / "magisk_config.prop", "w", encoding="utf-8"
+            ) as o:
                 for line in i.readlines()[-3:]:
                     o.write(line)
                 o.write(f"magisk.version={magisk_version}\n")
@@ -410,9 +351,9 @@ def update_code():
                         break
                 o.write(f"magisk.ondkVersion={ondk_version}\n")
 
-    mv(Path("Magisk", "native"), "native")
-    mv(Path("Magisk", "tools"), "tools")
-    rm_rf("Magisk")
+    mv(paths().project_root / "Magisk" / "native", paths().project_root / "native")
+    mv(paths().project_root / "Magisk" / "tools", paths().project_root / "tools")
+    rm_rf(paths().project_root / "Magisk")
 
 
 if __name__ == "__main__":

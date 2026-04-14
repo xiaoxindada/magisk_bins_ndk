@@ -1,6 +1,7 @@
 /.vscode/**
 /src/**/*-rs.cpp
 /src/**/*-rs.hpp
+/__pycache__/**
 /obj
 /libs
 /out
