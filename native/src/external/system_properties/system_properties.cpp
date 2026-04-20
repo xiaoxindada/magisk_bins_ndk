@@ -315,13 +315,14 @@ int SystemProperties::Update(prop_info* pi, const char* value, unsigned int len)
   }
   // Now the primary value property area is up-to-date. Let readers know that they should
   // look at the property value instead of the backup area.
-  atomic_thread_fence(memory_order_release);
   int new_serial = (len << 24) | ((serial + 1) & 0xffffff);
-  atomic_store_explicit(&pi->serial, new_serial, memory_order_relaxed);
+  atomic_store_explicit(&pi->serial, new_serial, memory_order_release);
   if (have_override) {
     atomic_store_explicit(&override_pi->serial, new_serial, memory_order_relaxed);
   }
-  __futex_wake(&pi->serial, INT32_MAX);  // Fence by side effect
+  // Implicitly includes a fence to ensure the serial number update becomes visible before
+  // we reuse the backup area the next time.
+  __futex_wake(&pi->serial, INT32_MAX);
   atomic_store_explicit(serial_pa->serial(),
                         atomic_load_explicit(serial_pa->serial(), memory_order_relaxed) + 1,
                         memory_order_release);
@@ -413,7 +414,7 @@ int SystemProperties::Add(const char* name, unsigned int namelen, const char* va
       // before any readers are started. Check that only init or root can write appcompat props.
       CHECK(getpid() == 1 || getuid() == 0);
       atomic_thread_fence(memory_order_release);
-      strlcpy(other_pi->value, value, valuelen + 1);
+      memcpy(other_pi->value, value, valuelen + 1);
     }
   }
 

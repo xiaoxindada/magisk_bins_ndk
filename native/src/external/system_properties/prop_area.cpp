@@ -156,7 +156,7 @@ prop_area* prop_area::map_prop_area(const char* filename, bool *is_rw) {
 }
 
 void* prop_area::allocate_obj(const size_t size, uint_least32_t* const off) {
-  const size_t aligned = __BIONIC_ALIGN(size, sizeof(uint_least32_t));
+  const size_t aligned = __builtin_align_up(size, sizeof(uint_least32_t));
   if (bytes_used_ + aligned > pa_data_size_) {
     return nullptr;
   }

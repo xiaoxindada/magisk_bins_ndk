@@ -83,6 +83,12 @@ void __wrap_abort_message(const char* format, ...) {
     abort();
 }
 
+// Make getprop no-op
+int __system_property_get(const char *name, char *value) {
+    value[0] = 0;
+    return 0;
+}
+
 typedef struct at_exit_func {
     void *arg;
     void (*func)(void*);
@@ -196,12 +202,4 @@ int getpagesize() {
         sz = getauxval(AT_PAGESZ);
     }
     return sz;
-}
-
-// Stack protector support
-
-uintptr_t __stack_chk_guard = 0;
-
-void __stack_chk_fail() {
-    abort();
 }

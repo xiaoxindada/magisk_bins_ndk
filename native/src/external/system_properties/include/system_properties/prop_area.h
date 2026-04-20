@@ -119,7 +119,7 @@ class prop_area {
     // serial is the same: if it is, the dirty backup area hasn't been
     // reused for something else and we can complete the
     // read immediately.
-    bytes_used_ +=  __BIONIC_ALIGN(PROP_VALUE_MAX, sizeof(uint_least32_t));
+    bytes_used_ +=  __builtin_align_up(PROP_VALUE_MAX, sizeof(uint_least32_t));
   }
 
   const prop_info* find(const char* name);

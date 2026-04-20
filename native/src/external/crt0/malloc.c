@@ -106,7 +106,7 @@ void free(void *ptr) {
     }
 }
 
-void *crt0_calloc(size_t nmemb, size_t size) {
+void *calloc(size_t nmemb, size_t size) {
     size_t sz;
     if (__builtin_mul_overflow(nmemb, size, &sz)) {
         errno = ENOMEM;
@@ -114,9 +114,6 @@ void *crt0_calloc(size_t nmemb, size_t size) {
     }
     return malloc(sz);
 }
-
-// For some reason calloc does not export properly
-__asm__(".global calloc \n calloc = crt0_calloc");
 
 void *realloc(void *ptr, size_t size) {
     if (ptr) {
