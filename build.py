@@ -7,32 +7,28 @@ import argparse
 import errno
 import glob
 import os
-import sys
 import os.path as op
 import shutil
 import stat
 import subprocess
 import tarfile
+import time
 import urllib.request
-
-
-def error(str: str):
-    print(f"\n\033[41m{str}\033[0m\n")
-    sys.exit(1)
+from pathlib import Path
 
 
 def mv(source: Path, target: Path):
     try:
         shutil.move(source, target)
-    except:
-        pass
+    except (OSError, shutil.Error) as e:
+        error(f"Cannot move {source} -> {target}: {e}")
 
 
 def cp(source: Path, target: Path):
     try:
         shutil.copyfile(source, target)
-    except:
-        pass
+    except (OSError, shutil.Error) as e:
+        error(f"Cannot copy {source} -> {target}: {e}")
 
 
 def cp_rf(source: Path, target: Path):
@@ -40,22 +36,40 @@ def cp_rf(source: Path, target: Path):
 
 
 def rm(file: Path):
+    file = Path(file)
+    if not file.exists() and not file.is_symlink():
+        return
     try:
-        os.remove(file)
-    except OSError as e:
-        if e.errno != errno.ENOENT:
-            raise
+        file.unlink()
+    except PermissionError:
+        os.chmod(file, stat.S_IWRITE)
+        file.unlink()
+    except FileNotFoundError:
+        pass
 
 
 def rm_on_error(func, path, _):
-    # Remove a read-only file on Windows will get "WindowsError: [Error 5] Access is denied"
-    # Clear the "read-only" and retry
-    os.chmod(path, stat.S_IWRITE)
-    os.unlink(path)
+    # Removing a read-only file on Windows will get "WindowsError: [Error 5] Access is denied"
+    # Clear the "read-only" bit and retry
+    try:
+        os.chmod(path, stat.S_IWRITE)
+        os.unlink(path)
+    except FileNotFoundError:
+        pass
 
 
 def rm_rf(path: Path):
-    shutil.rmtree(path, ignore_errors=True, onerror=rm_on_error)
+    if path.is_file() or path.is_symlink():
+        try:
+            path.unlink(missing_ok=True)
+        except PermissionError:
+            os.chmod(path, stat.S_IWRITE)
+            path.unlink(missing_ok=True)
+    elif path.is_dir():
+        if sys.version_info >= (3, 12):
+            shutil.rmtree(path, ignore_errors=False, onexc=rm_on_error)
+        else:
+            shutil.rmtree(path, ignore_errors=False, onerror=rm_on_error)
 
 
 def mkdir(path, mode=0o755):
@@ -82,7 +96,10 @@ def system(cmds: list):
 def cmd_out(cmds: list):
     return (
         subprocess.run(
-            cmds, shell=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
+            cmds,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            shell=is_windows,
         )
         .stdout.strip()
         .decode("utf-8")
@@ -121,16 +138,10 @@ build_abis = dict(zip(archs, triples))
 config = load_config()
 
 
-def write_if_diff(file_name, text):
-    do_write = True
-    if op.exists(file_name):
-        with open(file_name, "r") as f:
-            orig = f.read()
-        do_write = orig != text
-    if do_write:
-        with open(file_name, "w") as f:
-            print(f"Write file {file_name}")
-            f.write(text)
+def write_if_diff(file_name: Path, text: str):
+    if not file_name.exists() or file_name.read_text(encoding="utf-8") != text:
+        file_name.write_text(text, encoding="utf-8")
+        print(f"Write file {file_name}")
 
 
 def dump_flag_header():
@@ -167,11 +178,13 @@ def build_rust_src(targets: set):
     if "resetprop" in targets:
         targets.add("magisk")
     targets = targets & rust_targets
+    if not targets:
+        return
 
     os.chdir(paths().native / "src")
 
     # Start building the build commands
-    cmds = ["cargo", "build", "-p", ""]
+    cmds = ["cargo", "build", "--lib"]
     if release:
         cmds.append("-r")
         profile = "release"
@@ -183,8 +196,7 @@ def build_rust_src(targets: set):
         cmds.append(triple)
 
     for tgt in targets:
-        cmds[3] = tgt
-        proc = execv(cmds)
+        proc = execv([*cmds, "-p", tgt])
         if proc.returncode != 0:
             error("Build rust src failed!")
 
@@ -249,7 +261,10 @@ def clean_elf():
         cmds.extend(glob.glob("out/*/magisk"))
     if "magiskpolicy" in default_targets:
         cmds.extend(glob.glob("out/*/magiskpolicy"))
-    execv(cmds)
+    proc = execv(cmds)
+    if proc.returncode != 0:
+        error("Clean elf failed!")
+    os.chdir(paths().project_root)
 
 
 def clean_build_src():
@@ -262,6 +277,51 @@ def clean_build_src():
     staticlibs = [l for l in glob.glob("out/*/*.a")]
     for lib in staticlibs:
         rm(lib)
+    os.chdir(paths().project_root)
+
+
+class ProgressStream:
+    """Wrapper around a stream that tracks read bytes and reports progress."""
+
+    def __init__(self, response, total_size: int):
+        self.response = response
+        self.total = total_size
+        self.read_bytes = 0
+        self.last_update = 0.0
+        self.is_tty = sys.stdout.isatty()
+
+    def read(self, size: int = -1) -> bytes:
+        chunk = self.response.read(size)
+        if chunk:
+            self.read_bytes += len(chunk)
+            self._update()
+        return chunk
+
+    def _update(self):
+        now = time.time()
+        if self.is_tty and (
+            now - self.last_update >= 0.1 or self.read_bytes >= self.total
+        ):
+            self.last_update = now
+            read_mb = self.read_bytes / (1024 * 1024)
+            if self.total > 0:
+                total_mb = self.total / (1024 * 1024)
+                pct = (self.read_bytes / self.total) * 100
+                bar_len = 30
+                filled = min(bar_len, int(bar_len * self.read_bytes / self.total))
+                bar = "=" * filled + (">" if filled < bar_len else "")
+                bar = bar.ljust(bar_len)
+                print(
+                    f"\r[{bar}] {pct:5.1f}% ({read_mb:5.1f} / {total_mb:.1f} MB)",
+                    end="",
+                    flush=True,
+                )
+            else:
+                print(f"\rDownloading: {read_mb:.1f} MB", end="", flush=True)
+
+    def finish(self):
+        if self.is_tty:
+            print()
 
 
 def setup_ndk():
@@ -277,11 +337,16 @@ def setup_ndk():
     ):
         print(f"Downloading and extracting {ndk_archive}")
         with urllib.request.urlopen(url) as response:
-            with tarfile.open(mode="r|xz", fileobj=response) as tar:
-                if hasattr(tarfile, "data_filter"):
-                    tar.extractall(paths().project_root, filter="tar")
-                else:
-                    tar.extractall(paths().project_root)
+            total_size = int(response.headers.get("Content-Length", 0))
+            progress = ProgressStream(response, total_size)
+            try:
+                with tarfile.open(mode="r|xz", fileobj=progress) as tar:
+                    if hasattr(tarfile, "data_filter"):
+                        tar.extractall(paths().project_root, filter="tar")
+                    else:
+                        tar.extractall(paths().project_root)
+            finally:
+                progress.finish()
     elif op.exists(ndk_archive):
         print(f"Extracting {ndk_archive}")
         with tarfile.open(ndk_archive, mode="r|xz") as tar:
@@ -289,6 +354,9 @@ def setup_ndk():
                 tar.extractall(paths().project_root, filter="tar")
             else:
                 tar.extractall(paths().project_root)
+    else:
+        print(f"ONDK {ondk_version} is already installed")
+        return
 
     rm_rf(paths().ndk)
     mv(ondk_path, paths().ndk)
@@ -308,7 +376,7 @@ def run_ndk_build(cmds: list):
     cmds.append(f"NDK_PROJECT_PATH=.")
     cmds.append(f"NDK_APPLICATION_MK=src/Application.mk")
     cmds.append(f"APP_ABI={' '.join(build_abis.keys())}")
-    cmds.append(f"-j{min(8, cpu_count)}")
+    cmds.append(f"-j{cpu_count}")
     if not release:
         cmds.append("MAGISK_DEBUG=1")
     proc = execv([paths().ndk_build, *cmds])
